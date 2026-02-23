@@ -40,6 +40,45 @@ public sealed class Booking : IAggregateRoot
     public static Booking CreateFromQuoteSnapshot(QuoteSnapshot snapshot, string snapshotHash, DateTimeOffset now)
         => new(Guid.NewGuid(), snapshot, snapshotHash, now);
 
+    public static Booking Rehydrate(
+        Guid id,
+        BookingStatus status,
+        QuoteSnapshot snapshot,
+        string snapshotHash,
+        DateTimeOffset createdAt,
+        DateTimeOffset? confirmedAt,
+        DateTimeOffset? cancelledAt)
+    {
+        var booking = new Booking(id, snapshot, snapshotHash, createdAt);
+
+        if (status is BookingStatus.Confirmed or BookingStatus.Cancelled)
+        {
+            if (confirmedAt is null)
+                throw new DomainRuleViolation("ConfirmedAt is required for confirmed/cancelled bookings.");
+
+            booking.Confirm(confirmedAt.Value);
+        }
+
+        if (status == BookingStatus.Cancelled)
+        {
+            if (cancelledAt is null)
+                throw new DomainRuleViolation("CancelledAt is required for cancelled bookings.");
+
+            booking.Cancel(cancelledAt.Value);
+        }
+
+        if (status == BookingStatus.Pending)
+            return booking;
+
+        if (status == BookingStatus.Confirmed)
+            return booking;
+
+        if (status == BookingStatus.Cancelled)
+            return booking;
+
+        throw new DomainRuleViolation($"Unsupported booking status '{status}'.");
+    }
+
     public void Confirm(DateTimeOffset now)
     {
         if (Status == BookingStatus.Confirmed) return;

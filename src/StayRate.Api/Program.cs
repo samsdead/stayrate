@@ -26,7 +26,7 @@ builder.Logging.AddJsonConsole(options =>
 });
 
 builder.Services.AddControllers();
-builder.Services.AddInfrastructure();
+builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<ConfirmBookingHandler>();
 builder.Services.AddAWSLambdaHosting(LambdaEventSource.RestApi);
 builder.Services.AddProblemDetails();
