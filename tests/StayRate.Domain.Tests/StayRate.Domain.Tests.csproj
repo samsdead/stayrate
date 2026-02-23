@@ -21,6 +21,8 @@
   <ItemGroup>
     <ProjectReference Include="..\..\src\StayRate.Domain\StayRate.Domain.csproj" />
     <ProjectReference Include="..\..\src\StayRate.Application\StayRate.Application.csproj" />
+    <ProjectReference Include="..\..\src\StayRate.Infrastructure\StayRate.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\StayRate.Api\StayRate.Api.csproj" />
   </ItemGroup>
 
 </Project>
