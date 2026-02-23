@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Microsoft.AspNetCore.Mvc;
 using StayRate.Application.Bookings.ConfirmBooking;
 using StayRate.Domain;
@@ -9,22 +10,45 @@ namespace StayRate.Api.Controllers;
 [Route("api/v1/bookings")]
 public sealed class BookingsController : ControllerBase
 {
-    public sealed record MoneyRequest(decimal Amount, string Currency);
+    public sealed record MoneyRequest(
+        [property: Range(typeof(decimal), "0.01", "79228162514264337593543950335")]
+        decimal Amount,
+        [property: Required, MinLength(3), MaxLength(3)]
+        string Currency
+    );
 
     public sealed record QuoteSnapshotLineItemRequest(
+        [property: Required, MinLength(1)]
         string Code,
+        [property: Required, MinLength(1)]
         string Description,
+        [property: Required]
         MoneyRequest Amount
     );
 
     public sealed record ConfirmBookingRequest(
+        [property: Required, MinLength(1)]
         string PropertyId,
         DateOnly CheckIn,
         DateOnly CheckOut,
+        [property: Range(1, int.MaxValue)]
         int Guests,
+        [property: Required, MinLength(1)]
         List<QuoteSnapshotLineItemRequest> LineItems,
+        [property: Required]
         MoneyRequest Total
-    );
+    ) : IValidatableObject
+    {
+        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
+        {
+            if (CheckOut <= CheckIn)
+            {
+                yield return new ValidationResult(
+                    "CheckOut must be after CheckIn.",
+                    [nameof(CheckOut), nameof(CheckIn)]);
+            }
+        }
+    }
 
     private readonly ConfirmBookingHandler _handler;
 
@@ -56,17 +80,10 @@ public sealed class BookingsController : ControllerBase
             new Money(request.Total.Amount, request.Total.Currency)
         );
 
-        try
-        {
-            var result = await _handler.HandleAsync(
-                new ConfirmBookingCommand(idempotencyKey, snapshot),
-                ct);
+        var result = await _handler.HandleAsync(
+            new ConfirmBookingCommand(idempotencyKey, snapshot),
+            ct);
 
-            return Ok(result);
-        }
-        catch (IdempotencyConflictException ex)
-        {
-            return Conflict(new { message = ex.Message, ex.IdempotencyKey });
-        }
+        return Ok(result);
     }
 }

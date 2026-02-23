@@ -39,15 +39,14 @@ public sealed class BookingsControllerTests
     }
 
     [Fact]
-    public async Task Confirm_WhenSameKeyDifferentPayload_ReturnsConflict()
+    public async Task Confirm_WhenSameKeyDifferentPayload_ThrowsIdempotencyConflictException()
     {
         var controller = CreateController();
 
         await controller.Confirm("idem-api-2", CreateRequest("prop-3"), CancellationToken.None);
-        var second = await controller.Confirm("idem-api-2", CreateRequest("prop-4"), CancellationToken.None);
 
-        var conflict = Assert.IsType<ConflictObjectResult>(second.Result);
-        Assert.Equal(409, conflict.StatusCode);
+        await Assert.ThrowsAsync<IdempotencyConflictException>(() =>
+            controller.Confirm("idem-api-2", CreateRequest("prop-4"), CancellationToken.None));
     }
 
     private static BookingsController CreateController()
