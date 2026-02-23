@@ -51,7 +51,7 @@ jobs:
       - name: Configure AWS Credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN || 'arn:aws:iam::762397612240:role/stayrate-github-deploy-role' }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Dev Stack
@@ -80,3 +80,35 @@ jobs:
             -d "$body")
           test "$status" = "200"
           cat /tmp/confirm.out
+
+      - name: Smoke Test Idempotency Replay
+        run: |
+          set -euo pipefail
+          api="${{ steps.deploy.outputs.api_endpoint }}"
+          key="gha-replay-${{ github.run_id }}"
+          body='{"propertyId":"prop-gha-replay","checkIn":"2026-03-20","checkOut":"2026-03-22","guests":2,"lineItems":[{"code":"nightly","description":"Nightly rate","amount":{"amount":100.00,"currency":"GBP"}}],"total":{"amount":200.00,"currency":"GBP"}}'
+
+          status1=$(curl -sS -o /tmp/replay1.out -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -H "Idempotency-Key: ${key}" \
+            -X POST "$api/api/v1/bookings/confirm" \
+            -d "$body")
+          test "$status1" = "200"
+
+          status2=$(curl -sS -o /tmp/replay2.out -w "%{http_code}" \
+            -H "Content-Type: application/json" \
+            -H "Idempotency-Key: ${key}" \
+            -X POST "$api/api/v1/bookings/confirm" \
+            -d "$body")
+          test "$status2" = "200"
+
+          python - <<'PY'
+          import json
+          with open('/tmp/replay1.out', 'r', encoding='utf-8') as f:
+              first = json.load(f)
+          with open('/tmp/replay2.out', 'r', encoding='utf-8') as f:
+              second = json.load(f)
+          assert first['bookingId'] == second['bookingId'], 'bookingId mismatch on idempotent replay'
+          assert first['quoteSnapshotHash'] == second['quoteSnapshotHash'], 'snapshot hash mismatch on replay'
+          print(first)
+          PY

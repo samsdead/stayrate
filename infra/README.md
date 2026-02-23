@@ -3,6 +3,7 @@
 This CDK app deploys the `dev` serverless stack:
 
 - Lambda function for `StayRate.Api`
+- Lambda alias (`live`) with CodeDeploy canary rollout (`10% for 5 minutes`)
 - API Gateway HTTP API
 - DynamoDB table: bookings
 - DynamoDB table: idempotency
@@ -38,6 +39,7 @@ Workflow: `.github/workflows/deploy-dev.yml`
 Required repository variable:
 
 - `AWS_DEPLOY_ROLE_ARN` = IAM role ARN assumed by GitHub OIDC
+The workflow has a fallback to `arn:aws:iam::762397612240:role/stayrate-github-deploy-role` if this variable is not set.
 
 Trust policy for the IAM role:
 
@@ -62,4 +64,16 @@ Trust policy for the IAM role:
     }
   ]
 }
+```
+
+Create role and attach deploy permissions:
+
+```bash
+aws iam create-role \
+  --role-name stayrate-github-deploy-role \
+  --assume-role-policy-document file://trust-policy.json
+
+aws iam attach-role-policy \
+  --role-name stayrate-github-deploy-role \
+  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
 ```

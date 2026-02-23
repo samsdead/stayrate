@@ -1,10 +1,12 @@
 using System.Collections.Generic;
 using Amazon.CDK;
 using Amazon.CDK.AWS.Apigatewayv2;
+using Amazon.CDK.AWS.CloudWatch;
+using Amazon.CDK.AWS.CodeDeploy;
 using Amazon.CDK.AWS.DynamoDB;
+using Amazon.CDK.AWS.IAM;
 using Amazon.CDK.AWS.Lambda;
 using Amazon.CDK.AWS.S3;
-using Amazon.CDK.AWS.IAM;
 using Constructs;
 
 namespace Infra;
@@ -13,6 +15,11 @@ public class InfraStack : Stack
 {
     internal InfraStack(Construct scope, string id, IStackProps props = null) : base(scope, id, props)
     {
+        var enableCodeDeployCanary = string.Equals(
+            Node.TryGetContext("enableCodeDeployCanary")?.ToString(),
+            "true",
+            System.StringComparison.OrdinalIgnoreCase);
+
         var lambdaArtifactBucket = new CfnParameter(this, "LambdaArtifactBucket", new CfnParameterProps
         {
             Type = "String",
@@ -23,6 +30,12 @@ public class InfraStack : Stack
         {
             Type = "String",
             Description = "S3 object key for the Lambda deployment artifact zip"
+        });
+
+        var lambdaArtifactObjectVersion = new CfnParameter(this, "LambdaArtifactObjectVersion", new CfnParameterProps
+        {
+            Type = "String",
+            Description = "S3 object version for the Lambda deployment artifact"
         });
 
         var bookingsTable = new Table(this, "BookingsTable", new TableProps
@@ -38,8 +51,11 @@ public class InfraStack : Stack
             TableName = "stayrate-dev-idempotency",
             PartitionKey = new Attribute { Name = "IdempotencyKey", Type = AttributeType.STRING },
             BillingMode = BillingMode.PAY_PER_REQUEST,
+            TimeToLiveAttribute = "ExpiresAtEpoch",
             RemovalPolicy = RemovalPolicy.DESTROY
         });
+
+        var artifactBucket = Bucket.FromBucketName(this, "LambdaArtifactCodeBucket", lambdaArtifactBucket.ValueAsString);
 
         var apiLambda = new Function(this, "StayRateApiLambda", new FunctionProps
         {
@@ -49,9 +65,14 @@ public class InfraStack : Stack
             Architecture = Architecture.ARM_64,
             MemorySize = 512,
             Timeout = Duration.Seconds(15),
+            LogGroup = new Amazon.CDK.AWS.Logs.LogGroup(this, "StayRateApiLambdaLogGroup", new Amazon.CDK.AWS.Logs.LogGroupProps
+            {
+                Retention = Amazon.CDK.AWS.Logs.RetentionDays.TWO_WEEKS
+            }),
             Code = Code.FromBucket(
-                Bucket.FromBucketName(this, "LambdaArtifactCodeBucket", lambdaArtifactBucket.ValueAsString),
-                lambdaArtifactKey.ValueAsString),
+                artifactBucket,
+                lambdaArtifactKey.ValueAsString,
+                lambdaArtifactObjectVersion.ValueAsString),
             Environment = new Dictionary<string, string>
             {
                 ["ASPNETCORE_ENVIRONMENT"] = "Cloud",
@@ -63,17 +84,23 @@ public class InfraStack : Stack
         bookingsTable.GrantReadWriteData(apiLambda);
         idempotencyTable.GrantReadWriteData(apiLambda);
 
+        var liveAlias = new Alias(this, "StayRateApiLiveAlias", new AliasProps
+        {
+            AliasName = "live",
+            Version = apiLambda.CurrentVersion
+        });
+
         var httpApi = new CfnApi(this, "StayRateHttpApi", new CfnApiProps
         {
             Name = "stayrate-dev-api",
             ProtocolType = "HTTP"
         });
 
-        var integration = new CfnIntegration(this, "StayRateHttpApiLambdaIntegration", new CfnIntegrationProps
+        var integration = new Amazon.CDK.AWS.Apigatewayv2.CfnIntegration(this, "StayRateHttpApiLambdaIntegration", new Amazon.CDK.AWS.Apigatewayv2.CfnIntegrationProps
         {
             ApiId = httpApi.Ref,
             IntegrationType = "AWS_PROXY",
-            IntegrationUri = apiLambda.FunctionArn,
+            IntegrationUri = liveAlias.FunctionArn,
             PayloadFormatVersion = "2.0"
         });
 
@@ -91,12 +118,69 @@ public class InfraStack : Stack
             AutoDeploy = true
         });
 
-        apiLambda.AddPermission("AllowHttpApiInvoke", new Permission
+        liveAlias.AddPermission("AllowHttpApiInvoke", new Permission
         {
             Principal = new ServicePrincipal("apigateway.amazonaws.com"),
             Action = "lambda:InvokeFunction",
             SourceArn = $"arn:aws:execute-api:{Region}:{Account}:{httpApi.Ref}/*/$default"
         });
+
+        var lambdaErrorsAlarm = new Alarm(this, "StayRateApiLambdaErrorsAlarm", new AlarmProps
+        {
+            AlarmName = "stayrate-dev-lambda-errors",
+            Metric = liveAlias.MetricErrors(new MetricOptions
+            {
+                Period = Duration.Minutes(1),
+                Statistic = "Sum"
+            }),
+            Threshold = 1,
+            EvaluationPeriods = 1,
+            DatapointsToAlarm = 1,
+            TreatMissingData = TreatMissingData.NOT_BREACHING
+        });
+
+        var api5xxAlarm = new Alarm(this, "StayRateApi5xxAlarm", new AlarmProps
+        {
+            AlarmName = "stayrate-dev-api-5xx",
+            Metric = new Metric(new MetricProps
+            {
+                Namespace = "AWS/ApiGateway",
+                MetricName = "5xx",
+                Period = Duration.Minutes(1),
+                Statistic = "Sum",
+                DimensionsMap = new Dictionary<string, string>
+                {
+                    ["ApiId"] = httpApi.Ref,
+                    ["Stage"] = "$default"
+                }
+            }),
+            Threshold = 1,
+            EvaluationPeriods = 1,
+            DatapointsToAlarm = 1,
+            TreatMissingData = TreatMissingData.NOT_BREACHING
+        });
+
+        if (enableCodeDeployCanary)
+        {
+            var deploymentApplication = new LambdaApplication(this, "StayRateApiDeploymentApplication", new LambdaApplicationProps
+            {
+                ApplicationName = "stayrate-dev-api"
+            });
+
+            _ = new LambdaDeploymentGroup(this, "StayRateApiDeploymentGroup", new LambdaDeploymentGroupProps
+            {
+                Application = deploymentApplication,
+                Alias = liveAlias,
+                DeploymentConfig = LambdaDeploymentConfig.CANARY_10PERCENT_5MINUTES,
+                Alarms = [lambdaErrorsAlarm, api5xxAlarm],
+                AutoRollback = new AutoRollbackConfig
+                {
+                    FailedDeployment = true,
+                    StoppedDeployment = true,
+                    DeploymentInAlarm = true
+                }
+            });
+        }
 
         _ = new Amazon.CDK.AWS.SSM.StringParameter(this, "BookingsTableNameParameter", new Amazon.CDK.AWS.SSM.StringParameterProps
         {

@@ -55,6 +55,10 @@ if (-not $bucketExists) {
     }
 }
 
+Invoke-Checked -Command {
+    aws s3api put-bucket-versioning --bucket $artifactBucket --versioning-configuration Status=Enabled | Out-Null
+} -FailureMessage "Failed to enable S3 bucket versioning."
+
 $artifactDir = Join-Path $repoRoot "artifacts"
 New-Item -ItemType Directory -Force -Path $artifactDir | Out-Null
 $artifactPath = Join-Path $artifactDir "stayrate-api.zip"
@@ -75,6 +79,15 @@ Invoke-Checked -Command {
 
 Invoke-Checked -Command { aws s3 cp $artifactPath "s3://$artifactBucket/$artifactKey" | Out-Null } -FailureMessage "Failed to upload Lambda artifact to S3."
 
+$objectVersionFile = Join-Path $tempDir "stayrate-object-version.txt"
+Invoke-Checked -Command {
+    aws s3api head-object --bucket $artifactBucket --key $artifactKey --query VersionId --output text | Out-File -FilePath $objectVersionFile -Encoding ascii
+} -FailureMessage "Failed to resolve S3 object version for Lambda artifact."
+$objectVersion = (Get-Content $objectVersionFile -Raw).Trim()
+if ([string]::IsNullOrWhiteSpace($objectVersion) -or $objectVersion -eq "None") {
+    throw "S3 object version was not returned for Lambda artifact."
+}
+
 Push-Location "infra"
 try {
     Invoke-Checked -Command { cdk bootstrap "aws://$accountId/$Region" | Out-Null } -FailureMessage "CDK bootstrap failed."
@@ -82,7 +95,8 @@ try {
         cdk deploy StayRateDevStack `
             --require-approval never `
             --parameters "LambdaArtifactBucket=$artifactBucket" `
-            --parameters "LambdaArtifactKey=$artifactKey"
+            --parameters "LambdaArtifactKey=$artifactKey" `
+            --parameters "LambdaArtifactObjectVersion=$objectVersion"
     } -FailureMessage "CDK deploy failed."
 }
 finally {
@@ -99,6 +113,7 @@ Write-Host "Account: $accountId"
 Write-Host "Region: $Region"
 Write-Host "Bucket: $artifactBucket"
 Write-Host "ArtifactKey: $artifactKey"
+Write-Host "ArtifactObjectVersion: $objectVersion"
 Write-Host "ApiEndpoint: $apiEndpoint"
 Write-Host "API_ENDPOINT=$apiEndpoint"
 
@@ -106,4 +121,5 @@ if ($env:GITHUB_OUTPUT) {
     Add-Content -Path $env:GITHUB_OUTPUT -Value "api_endpoint=$apiEndpoint"
     Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_bucket=$artifactBucket"
     Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_key=$artifactKey"
+    Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_object_version=$objectVersion"
 }

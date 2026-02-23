@@ -8,6 +8,7 @@ namespace StayRate.Infrastructure.Idempotency.DynamoDb;
 
 public sealed class DynamoDbIdempotencyStore : IIdempotencyStore
 {
+    private const int TtlDays = 7;
     private readonly IAmazonDynamoDB _dynamoDb;
     private readonly string _tableName;
 
@@ -48,7 +49,8 @@ public sealed class DynamoDbIdempotencyStore : IIdempotencyStore
             ["IdempotencyKey"] = new() { S = record.Key },
             ["RequestHash"] = new() { S = record.RequestHash },
             ["ResultBookingId"] = new() { S = record.ResultBookingId.ToString("D") },
-            ["CreatedAt"] = new() { S = record.CreatedAt.ToString("O") }
+            ["CreatedAt"] = new() { S = record.CreatedAt.ToString("O") },
+            ["ExpiresAtEpoch"] = new() { N = record.CreatedAt.AddDays(TtlDays).ToUnixTimeSeconds().ToString(CultureInfo.InvariantCulture) }
         };
 
         try
