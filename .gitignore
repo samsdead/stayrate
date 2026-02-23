@@ -5,6 +5,8 @@
 
 # dotenv files
 .env
+.env.*
+!.env.example
 
 # User-specific files
 *.rsuser
@@ -70,6 +72,10 @@ artifacts/
 
 # ASP.NET Scaffolding
 ScaffoldingReadMe.txt
+
+# Local app settings overrides
+appsettings.Local.json
+appsettings.*.local.json
 
 # StyleCop
 StyleCopReport.xml

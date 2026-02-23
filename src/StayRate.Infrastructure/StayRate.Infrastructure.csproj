@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
     <ProjectReference Include="..\StayRate.Application\StayRate.Application.csproj" />
@@ -6,9 +6,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Idempotency\" />
-    <Folder Include="Hashing\" />
-    <Folder Include="Persistence\" />
+    <PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.0" />
   </ItemGroup>
 
   <PropertyGroup>
