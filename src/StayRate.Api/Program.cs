@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
+using Amazon.Lambda.AspNetCoreServer;
 using StayRate.Api.Middleware;
 using StayRate.Application.Bookings.ConfirmBooking;
 using StayRate.Infrastructure;
@@ -27,6 +28,7 @@ builder.Logging.AddJsonConsole(options =>
 builder.Services.AddControllers();
 builder.Services.AddInfrastructure();
 builder.Services.AddScoped<ConfirmBookingHandler>();
+builder.Services.AddAWSLambdaHosting(LambdaEventSource.RestApi);
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
 builder.Services.AddHealthChecks()
