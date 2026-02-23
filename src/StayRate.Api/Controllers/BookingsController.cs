@@ -10,35 +10,45 @@ namespace StayRate.Api.Controllers;
 [Route("api/v1/bookings")]
 public sealed class BookingsController : ControllerBase
 {
-    public sealed record MoneyRequest(
-        [property: Range(typeof(decimal), "0.01", "79228162514264337593543950335")]
-        decimal Amount,
-        [property: Required, MinLength(3), MaxLength(3)]
-        string Currency
-    );
-
-    public sealed record QuoteSnapshotLineItemRequest(
-        [property: Required, MinLength(1)]
-        string Code,
-        [property: Required, MinLength(1)]
-        string Description,
-        [property: Required]
-        MoneyRequest Amount
-    );
-
-    public sealed record ConfirmBookingRequest(
-        [property: Required, MinLength(1)]
-        string PropertyId,
-        DateOnly CheckIn,
-        DateOnly CheckOut,
-        [property: Range(1, int.MaxValue)]
-        int Guests,
-        [property: Required, MinLength(1)]
-        List<QuoteSnapshotLineItemRequest> LineItems,
-        [property: Required]
-        MoneyRequest Total
-    ) : IValidatableObject
+    public sealed class MoneyRequest
     {
+        [Range(typeof(decimal), "0.01", "79228162514264337593543950335")]
+        public decimal Amount { get; init; }
+
+        [Required, MinLength(3), MaxLength(3)]
+        public string Currency { get; init; } = string.Empty;
+    }
+
+    public sealed class QuoteSnapshotLineItemRequest
+    {
+        [Required, MinLength(1)]
+        public string Code { get; init; } = string.Empty;
+
+        [Required, MinLength(1)]
+        public string Description { get; init; } = string.Empty;
+
+        [Required]
+        public MoneyRequest Amount { get; init; } = new();
+    }
+
+    public sealed class ConfirmBookingRequest : IValidatableObject
+    {
+        [Required, MinLength(1)]
+        public string PropertyId { get; init; } = string.Empty;
+
+        public DateOnly CheckIn { get; init; }
+
+        public DateOnly CheckOut { get; init; }
+
+        [Range(1, int.MaxValue)]
+        public int Guests { get; init; }
+
+        [Required, MinLength(1)]
+        public List<QuoteSnapshotLineItemRequest> LineItems { get; init; } = [];
+
+        [Required]
+        public MoneyRequest Total { get; init; } = new();
+
         public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
         {
             if (CheckOut <= CheckIn)

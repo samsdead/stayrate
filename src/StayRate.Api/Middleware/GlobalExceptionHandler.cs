@@ -5,10 +5,19 @@ using StayRate.Domain.Common;
 
 namespace StayRate.Api.Middleware;
 
-public sealed class GlobalExceptionHandler(
-    IProblemDetailsService problemDetailsService,
-    ILogger<GlobalExceptionHandler> logger) : IExceptionHandler
+public sealed class GlobalExceptionHandler : IExceptionHandler
 {
+    private readonly IProblemDetailsService _problemDetailsService;
+    private readonly ILogger<GlobalExceptionHandler> _logger;
+
+    public GlobalExceptionHandler(
+        IProblemDetailsService problemDetailsService,
+        ILogger<GlobalExceptionHandler> logger)
+    {
+        _problemDetailsService = problemDetailsService;
+        _logger = logger;
+    }
+
     public async ValueTask<bool> TryHandleAsync(
         HttpContext httpContext,
         Exception exception,
@@ -23,9 +32,9 @@ public sealed class GlobalExceptionHandler(
         };
 
         if (statusCode >= 500)
-            logger.LogError(exception, "Unhandled exception");
+            _logger.LogError(exception, "Unhandled exception");
         else
-            logger.LogWarning(exception, "Handled exception");
+            _logger.LogWarning(exception, "Handled exception");
 
         var problem = new ProblemDetails
         {
@@ -40,7 +49,7 @@ public sealed class GlobalExceptionHandler(
         if (exception is IdempotencyConflictException idempotencyConflictException)
             problem.Extensions["idempotencyKey"] = idempotencyConflictException.IdempotencyKey;
 
-        return await problemDetailsService.TryWriteAsync(new ProblemDetailsContext
+        return await _problemDetailsService.TryWriteAsync(new ProblemDetailsContext
         {
             HttpContext = httpContext,
             Exception = exception,

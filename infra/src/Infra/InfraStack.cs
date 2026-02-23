@@ -1,9 +1,10 @@
 using System.Collections.Generic;
 using Amazon.CDK;
-using Amazon.CDK.AWS.APIGateway;
+using Amazon.CDK.AWS.Apigatewayv2;
 using Amazon.CDK.AWS.DynamoDB;
 using Amazon.CDK.AWS.Lambda;
 using Amazon.CDK.AWS.S3;
+using Amazon.CDK.AWS.IAM;
 using Constructs;
 
 namespace Infra;
@@ -62,15 +63,39 @@ public class InfraStack : Stack
         bookingsTable.GrantReadWriteData(apiLambda);
         idempotencyTable.GrantReadWriteData(apiLambda);
 
-        _ = new LambdaRestApi(this, "StayRateApiGateway", new LambdaRestApiProps
+        var httpApi = new CfnApi(this, "StayRateHttpApi", new CfnApiProps
         {
-            RestApiName = "stayrate-dev-api",
-            Handler = apiLambda,
-            Proxy = true,
-            DeployOptions = new StageOptions
-            {
-                StageName = "dev"
-            }
+            Name = "stayrate-dev-api",
+            ProtocolType = "HTTP"
+        });
+
+        var integration = new CfnIntegration(this, "StayRateHttpApiLambdaIntegration", new CfnIntegrationProps
+        {
+            ApiId = httpApi.Ref,
+            IntegrationType = "AWS_PROXY",
+            IntegrationUri = apiLambda.FunctionArn,
+            PayloadFormatVersion = "2.0"
+        });
+
+        _ = new CfnRoute(this, "StayRateHttpApiDefaultRoute", new CfnRouteProps
+        {
+            ApiId = httpApi.Ref,
+            RouteKey = "$default",
+            Target = $"integrations/{integration.Ref}"
+        });
+
+        _ = new CfnStage(this, "StayRateHttpApiDefaultStage", new CfnStageProps
+        {
+            ApiId = httpApi.Ref,
+            StageName = "$default",
+            AutoDeploy = true
+        });
+
+        apiLambda.AddPermission("AllowHttpApiInvoke", new Permission
+        {
+            Principal = new ServicePrincipal("apigateway.amazonaws.com"),
+            Action = "lambda:InvokeFunction",
+            SourceArn = $"arn:aws:execute-api:{Region}:{Account}:{httpApi.Ref}/*/$default"
         });
 
         _ = new Amazon.CDK.AWS.SSM.StringParameter(this, "BookingsTableNameParameter", new Amazon.CDK.AWS.SSM.StringParameterProps
@@ -93,6 +118,11 @@ public class InfraStack : Stack
         _ = new CfnOutput(this, "IdempotencyTableName", new CfnOutputProps
         {
             Value = idempotencyTable.TableName
+        });
+
+        _ = new CfnOutput(this, "ApiEndpoint", new CfnOutputProps
+        {
+            Value = httpApi.AttrApiEndpoint
         });
     }
 }

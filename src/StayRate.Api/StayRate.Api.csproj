@@ -17,4 +17,8 @@
     <ProjectReference Include="..\StayRate.Infrastructure\StayRate.Infrastructure.csproj" />
   </ItemGroup>
 
+  <Target Name="CreateLambdaBootstrap" AfterTargets="Publish">
+    <Copy SourceFiles="$(PublishDir)StayRate.Api" DestinationFiles="$(PublishDir)bootstrap" SkipUnchangedFiles="true" />
+  </Target>
+
 </Project>

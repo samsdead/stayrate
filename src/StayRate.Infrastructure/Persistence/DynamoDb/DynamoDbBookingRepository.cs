@@ -35,7 +35,7 @@ public sealed class DynamoDbBookingRepository : IBookingRepository
             ConsistentRead = true
         }, ct);
 
-        if (response.Item.Count == 0)
+        if (response.Item is null || response.Item.Count == 0)
             return null;
 
         var item = response.Item;

@@ -62,15 +62,30 @@ public sealed class BookingsControllerTests
 
     private static BookingsController.ConfirmBookingRequest CreateRequest(string propertyId)
     {
-        return new BookingsController.ConfirmBookingRequest(
-            propertyId,
-            new DateOnly(2026, 3, 10),
-            new DateOnly(2026, 3, 12),
-            2,
-            new List<BookingsController.QuoteSnapshotLineItemRequest>
+        return new BookingsController.ConfirmBookingRequest
+        {
+            PropertyId = propertyId,
+            CheckIn = new DateOnly(2026, 3, 10),
+            CheckOut = new DateOnly(2026, 3, 12),
+            Guests = 2,
+            LineItems =
+            [
+                new BookingsController.QuoteSnapshotLineItemRequest
+                {
+                    Code = "nightly",
+                    Description = "Nightly rate",
+                    Amount = new BookingsController.MoneyRequest
+                    {
+                        Amount = 100m,
+                        Currency = "GBP"
+                    }
+                }
+            ],
+            Total = new BookingsController.MoneyRequest
             {
-                new("nightly", "Nightly rate", new BookingsController.MoneyRequest(100m, "GBP"))
-            },
-            new BookingsController.MoneyRequest(200m, "GBP"));
+                Amount = 200m,
+                Currency = "GBP"
+            }
+        };
     }
 }

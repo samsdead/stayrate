@@ -3,13 +3,22 @@ using Microsoft.Extensions.Primitives;
 
 namespace StayRate.Api.Middleware;
 
-public sealed class RequestContextLoggingMiddleware(ILogger<RequestContextLoggingMiddleware> logger)
+public sealed class RequestContextLoggingMiddleware
 {
     private const string CorrelationHeader = "X-Correlation-Id";
     private const string IdempotencyHeader = "Idempotency-Key";
-    private readonly ILogger<RequestContextLoggingMiddleware> _logger = logger;
+    private readonly RequestDelegate _next;
+    private readonly ILogger<RequestContextLoggingMiddleware> _logger;
 
-    public async Task InvokeAsync(HttpContext context, RequestDelegate next)
+    public RequestContextLoggingMiddleware(
+        RequestDelegate next,
+        ILogger<RequestContextLoggingMiddleware> logger)
+    {
+        _next = next;
+        _logger = logger;
+    }
+
+    public async Task InvokeAsync(HttpContext context)
     {
         var correlationId = ResolveCorrelationId(context);
         context.TraceIdentifier = correlationId;
@@ -26,7 +35,7 @@ public sealed class RequestContextLoggingMiddleware(ILogger<RequestContextLoggin
             var stopwatch = Stopwatch.StartNew();
             try
             {
-                await next(context);
+                await _next(context);
             }
             finally
             {

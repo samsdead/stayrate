@@ -1,14 +1,32 @@
-# Welcome to your CDK C# project!
+# StayRate Infra
 
-This is a blank project for CDK development with C#.
+This CDK app deploys the `dev` serverless stack:
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+- Lambda function for `StayRate.Api`
+- API Gateway HTTP API
+- DynamoDB table: bookings
+- DynamoDB table: idempotency
+- SSM parameters for table names
 
-It uses the [.NET CLI](https://docs.microsoft.com/dotnet/articles/core/) to compile and execute your project.
+## Prerequisites
 
-## Useful commands
+- AWS CLI configured (`AWS_PROFILE`, `AWS_REGION`)
+- CDK CLI installed
+- .NET SDK installed
+- Amazon Lambda .NET tool installed (`Amazon.Lambda.Tools`)
 
-* `dotnet build src` compile this app
-* `cdk deploy`       deploy this stack to your default AWS account/region
-* `cdk diff`         compare deployed stack with current state
-* `cdk synth`        emits the synthesized CloudFormation template
+## Deploy
+
+From repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2
+```
+
+The script will:
+
+1. Package Lambda artifact from `src/StayRate.Api`
+2. Upload artifact to S3
+3. Bootstrap CDK (if needed)
+4. Deploy `StayRateDevStack`
+5. Print deployed API endpoint
