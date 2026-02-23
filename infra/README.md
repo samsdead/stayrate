@@ -30,3 +30,36 @@ The script will:
 3. Bootstrap CDK (if needed)
 4. Deploy `StayRateDevStack`
 5. Print deployed API endpoint
+
+## GitHub Actions Deploy
+
+Workflow: `.github/workflows/deploy-dev.yml`
+
+Required repository variable:
+
+- `AWS_DEPLOY_ROLE_ARN` = IAM role ARN assumed by GitHub OIDC
+
+Trust policy for the IAM role:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
+        },
+        "StringLike": {
+          "token.actions.githubusercontent.com:sub": "repo:samsdead/stayrate:*"
+        }
+      }
+    }
+  ]
+}
+```

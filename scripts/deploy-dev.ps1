@@ -1,5 +1,5 @@
 param(
-    [string]$Profile = "stayrate-dev",
+    [string]$Profile = "",
     [string]$Region = "eu-west-2"
 )
 
@@ -22,16 +22,17 @@ function Invoke-Checked {
     }
 }
 
-$env:AWS_PROFILE = $Profile
+$tempDir = [System.IO.Path]::GetTempPath()
+if (-not [string]::IsNullOrWhiteSpace($Profile)) {
+    $env:AWS_PROFILE = $Profile
+}
 $env:AWS_REGION = $Region
 
-$lambdaTool = Join-Path $env:USERPROFILE ".dotnet\tools\dotnet-lambda.exe"
-if (-not (Test-Path $lambdaTool)) {
-    throw "Amazon.Lambda.Tools not found at $lambdaTool"
-}
+Invoke-Checked -Command { dotnet lambda --help | Out-Null } -FailureMessage "Amazon.Lambda.Tools is not installed or not on PATH."
 
-Invoke-Checked -Command { aws sts get-caller-identity --query Account --output text | Out-File -FilePath "$env:TEMP\stayrate-account.txt" -Encoding ascii } -FailureMessage "Failed to resolve AWS account id."
-$accountId = (Get-Content "$env:TEMP\stayrate-account.txt" -Raw).Trim()
+$accountFile = Join-Path $tempDir "stayrate-account.txt"
+Invoke-Checked -Command { aws sts get-caller-identity --query Account --output text | Out-File -FilePath $accountFile -Encoding ascii } -FailureMessage "Failed to resolve AWS account id."
+$accountId = (Get-Content $accountFile -Raw).Trim()
 if ([string]::IsNullOrWhiteSpace($accountId)) {
     throw "Could not resolve AWS account id."
 }
@@ -62,7 +63,7 @@ if (Test-Path $artifactPath) {
 }
 
 Invoke-Checked -Command {
-    & $lambdaTool package `
+    dotnet lambda package `
         --project-location "src/StayRate.Api" `
         --configuration "Release" `
         --framework "net10.0" `
@@ -89,9 +90,9 @@ finally {
 }
 
 Invoke-Checked -Command {
-    aws cloudformation describe-stacks --stack-name StayRateDevStack --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text | Out-File -FilePath "$env:TEMP\stayrate-endpoint.txt" -Encoding ascii
+    aws cloudformation describe-stacks --stack-name StayRateDevStack --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text | Out-File -FilePath (Join-Path $tempDir "stayrate-endpoint.txt") -Encoding ascii
 } -FailureMessage "Failed to fetch API endpoint from CloudFormation outputs."
-$apiEndpoint = (Get-Content "$env:TEMP\stayrate-endpoint.txt" -Raw).Trim()
+$apiEndpoint = (Get-Content (Join-Path $tempDir "stayrate-endpoint.txt") -Raw).Trim()
 
 Write-Host "DEPLOY_COMPLETE"
 Write-Host "Account: $accountId"
@@ -99,3 +100,10 @@ Write-Host "Region: $Region"
 Write-Host "Bucket: $artifactBucket"
 Write-Host "ArtifactKey: $artifactKey"
 Write-Host "ApiEndpoint: $apiEndpoint"
+Write-Host "API_ENDPOINT=$apiEndpoint"
+
+if ($env:GITHUB_OUTPUT) {
+    Add-Content -Path $env:GITHUB_OUTPUT -Value "api_endpoint=$apiEndpoint"
+    Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_bucket=$artifactBucket"
+    Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_key=$artifactKey"
+}
