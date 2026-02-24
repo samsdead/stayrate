@@ -97,7 +97,7 @@ Budget configured:
 - `stayrate-monthly-cap`
 - Monthly cap: `5 USD`
 - Alert: `ACTUAL > 80%`
-- Subscriber: `alerts-configured-via-vars`
+- Subscriber: configured via `ALERT_EMAIL` / `ALERT_EMAIL_PROD` repository variables
 
 ## Persistence Configuration
 
