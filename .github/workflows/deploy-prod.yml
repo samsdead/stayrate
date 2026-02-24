@@ -3,6 +3,10 @@ name: Deploy Prod
 on:
   workflow_dispatch:
     inputs:
+      release_tag:
+        description: Release tag to deploy (v*.*.*)
+        type: string
+        required: true
       enable_canary:
         description: Enable CodeDeploy canary rollout
         type: boolean
@@ -26,6 +30,14 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.release_tag }}
+
+      - name: Validate Release Tag
+        run: |
+          set -euo pipefail
+          echo "${{ inputs.release_tag }}" | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'
+          test "$(git describe --tags --exact-match)" = "${{ inputs.release_tag }}"
 
       - name: Setup .NET
         uses: actions/setup-dotnet@v4
@@ -67,7 +79,7 @@ jobs:
         id: deploy
         shell: pwsh
         run: |
-          ./scripts/deploy-prod.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "${{ inputs.enable_canary }}"
+          ./scripts/deploy-prod.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "${{ inputs.enable_canary }}" -AlertEmail "${{ vars.ALERT_EMAIL_PROD || vars.ALERT_EMAIL || '' }}"
 
       - name: Smoke Test Health
         run: |

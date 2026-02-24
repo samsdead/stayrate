@@ -54,6 +54,12 @@ public class InfraStack : Stack
             TableName = $"{resourcePrefix}-bookings",
             PartitionKey = new Attribute { Name = "BookingId", Type = AttributeType.STRING },
             BillingMode = BillingMode.PAY_PER_REQUEST,
+            PointInTimeRecoverySpecification = isProd
+                ? new PointInTimeRecoverySpecification
+                {
+                    PointInTimeRecoveryEnabled = true
+                }
+                : null,
             RemovalPolicy = removalPolicy
         });
 
@@ -63,6 +69,12 @@ public class InfraStack : Stack
             PartitionKey = new Attribute { Name = "IdempotencyKey", Type = AttributeType.STRING },
             BillingMode = BillingMode.PAY_PER_REQUEST,
             TimeToLiveAttribute = "ExpiresAtEpoch",
+            PointInTimeRecoverySpecification = isProd
+                ? new PointInTimeRecoverySpecification
+                {
+                    PointInTimeRecoveryEnabled = true
+                }
+                : null,
             RemovalPolicy = removalPolicy
         });
 
@@ -87,6 +99,7 @@ public class InfraStack : Stack
             Environment = new Dictionary<string, string>
             {
                 ["ASPNETCORE_ENVIRONMENT"] = isProd ? "Production" : "Cloud",
+                ["Persistence__Provider"] = "DynamoDb",
                 ["Bookings__TableName"] = bookingsTable.TableName,
                 ["Idempotency__TableName"] = idempotencyTable.TableName
             }
@@ -244,6 +257,64 @@ public class InfraStack : Stack
             {
                 Title = "Lambda P95 Duration (ms)",
                 Left = [liveAlias.MetricDuration(new MetricOptions { Period = Duration.Minutes(1), Statistic = "p95" })],
+                Width = 24
+            }));
+        dashboard.AddWidgets(
+            new GraphWidget(new GraphWidgetProps
+            {
+                Title = "API Request Count",
+                Left = [new Metric(new MetricProps
+                {
+                    Namespace = "AWS/ApiGateway",
+                    MetricName = "Count",
+                    Period = Duration.Minutes(1),
+                    Statistic = "Sum",
+                    DimensionsMap = new Dictionary<string, string>
+                    {
+                        ["ApiId"] = httpApi.Ref,
+                        ["Stage"] = "$default"
+                    }
+                })],
+                Width = 12
+            }),
+            new GraphWidget(new GraphWidgetProps
+            {
+                Title = "API P95 Latency (ms)",
+                Left = [new Metric(new MetricProps
+                {
+                    Namespace = "AWS/ApiGateway",
+                    MetricName = "Latency",
+                    Period = Duration.Minutes(1),
+                    Statistic = "p95",
+                    DimensionsMap = new Dictionary<string, string>
+                    {
+                        ["ApiId"] = httpApi.Ref,
+                        ["Stage"] = "$default"
+                    }
+                })],
+                Width = 12
+            }));
+        dashboard.AddWidgets(
+            new GraphWidget(new GraphWidgetProps
+            {
+                Title = "DynamoDB Throttled Requests",
+                Left = [
+                    bookingsTable.MetricThrottledRequestsForOperation("PutItem", new MetricOptions
+                    {
+                        Period = Duration.Minutes(1),
+                        Statistic = "Sum"
+                    }),
+                    idempotencyTable.MetricThrottledRequestsForOperation("PutItem", new MetricOptions
+                    {
+                        Period = Duration.Minutes(1),
+                        Statistic = "Sum"
+                    }),
+                    idempotencyTable.MetricThrottledRequestsForOperation("GetItem", new MetricOptions
+                    {
+                        Period = Duration.Minutes(1),
+                        Statistic = "Sum"
+                    })
+                ],
                 Width = 24
             }));
 

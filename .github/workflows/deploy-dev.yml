@@ -61,7 +61,7 @@ jobs:
         id: deploy
         shell: pwsh
         run: |
-          ./scripts/deploy-dev.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "false"
+          ./scripts/deploy-dev.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "false" -AlertEmail "${{ vars.ALERT_EMAIL || '' }}"
 
       - name: Smoke Test Health
         run: |
