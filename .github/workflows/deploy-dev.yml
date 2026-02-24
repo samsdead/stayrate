@@ -40,6 +40,9 @@ jobs:
       - name: Test
         run: dotnet test StayRate.slnx -c Release --no-build
 
+      - name: Integration Quality Gate
+        run: dotnet test StayRate.slnx -c Release --no-build --filter "(FullyQualifiedName~BookingsEndpointIntegrationTests|FullyQualifiedName~DynamoDbRepositoryTests)"
+
       - name: Install CDK
         run: npm install -g aws-cdk
 
@@ -58,7 +61,7 @@ jobs:
         id: deploy
         shell: pwsh
         run: |
-          ./scripts/deploy-dev.ps1 -Region "${{ env.AWS_REGION }}"
+          ./scripts/deploy-dev.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "false"
 
       - name: Smoke Test Health
         run: |

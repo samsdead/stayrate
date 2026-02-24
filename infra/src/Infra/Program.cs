@@ -7,13 +7,18 @@ sealed class Program
     public static void Main(string[] args)
     {
         var app = new App();
-        _ = new InfraStack(app, "StayRateDevStack", new StackProps
+        var env = new Amazon.CDK.Environment
         {
-            Env = new Amazon.CDK.Environment
-            {
-                Account = System.Environment.GetEnvironmentVariable("CDK_DEFAULT_ACCOUNT"),
-                Region = System.Environment.GetEnvironmentVariable("CDK_DEFAULT_REGION")
-            }
+            Account = System.Environment.GetEnvironmentVariable("CDK_DEFAULT_ACCOUNT"),
+            Region = System.Environment.GetEnvironmentVariable("CDK_DEFAULT_REGION")
+        };
+        _ = new InfraStack(app, "StayRateDevStack", "dev", new StackProps
+        {
+            Env = env
+        });
+        _ = new InfraStack(app, "StayRateProdStack", "prod", new StackProps
+        {
+            Env = env
         });
         app.Synth();
     }

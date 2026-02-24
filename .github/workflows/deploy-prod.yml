@@ -1,0 +1,78 @@
+name: Deploy Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      enable_canary:
+        description: Enable CodeDeploy canary rollout
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: eu-west-2
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.deploy.outputs.api_endpoint }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Restore
+        run: dotnet restore StayRate.slnx
+
+      - name: Build
+        run: dotnet build StayRate.slnx -c Release --no-restore
+
+      - name: Test
+        run: dotnet test StayRate.slnx -c Release --no-build
+
+      - name: Integration Quality Gate
+        run: dotnet test StayRate.slnx -c Release --no-build --filter "(FullyQualifiedName~BookingsEndpointIntegrationTests|FullyQualifiedName~DynamoDbRepositoryTests)"
+
+      - name: Install CDK
+        run: npm install -g aws-cdk
+
+      - name: Install Lambda Tools
+        run: |
+          dotnet tool install -g Amazon.Lambda.Tools
+          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN_PROD || vars.AWS_DEPLOY_ROLE_ARN || 'arn:aws:iam::762397612240:role/stayrate-github-deploy-role' }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Prod Stack
+        id: deploy
+        shell: pwsh
+        run: |
+          ./scripts/deploy-prod.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "${{ inputs.enable_canary }}"
+
+      - name: Smoke Test Health
+        run: |
+          set -euo pipefail
+          api="${{ steps.deploy.outputs.api_endpoint }}"
+          status=$(curl -sS -o /tmp/health.out -w "%{http_code}" "$api/health")
+          test "$status" = "200"
+          cat /tmp/health.out

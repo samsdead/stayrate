@@ -1,6 +1,9 @@
 param(
     [string]$Profile = "",
-    [string]$Region = "eu-west-2"
+    [string]$Region = "eu-west-2",
+    [string]$EnableCodeDeployCanary = "false",
+    [string]$AlertEmail = "",
+    [string]$SlackWebhookUrl = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -23,12 +26,22 @@ function Invoke-Checked {
 }
 
 $tempDir = [System.IO.Path]::GetTempPath()
+if ([string]::IsNullOrWhiteSpace($EnableCodeDeployCanary)) {
+    $EnableCodeDeployCanary = "false"
+}
+$canaryEnabled = $EnableCodeDeployCanary.ToLowerInvariant() -in @("true", "1", "yes", "y")
 if (-not [string]::IsNullOrWhiteSpace($Profile)) {
     $env:AWS_PROFILE = $Profile
 }
 $env:AWS_REGION = $Region
 
 Invoke-Checked -Command { dotnet lambda --help | Out-Null } -FailureMessage "Amazon.Lambda.Tools is not installed or not on PATH."
+if ($canaryEnabled) {
+    aws deploy list-applications --output text | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "CodeDeploy is not available in this AWS account. Disable canary or enable CodeDeploy subscription first."
+    }
+}
 
 $accountFile = Join-Path $tempDir "stayrate-account.txt"
 Invoke-Checked -Command { aws sts get-caller-identity --query Account --output text | Out-File -FilePath $accountFile -Encoding ascii } -FailureMessage "Failed to resolve AWS account id."
@@ -41,6 +54,7 @@ $artifactBucket = "stayrate-dev-artifacts-$accountId-$Region"
 $artifactPrefix = "lambda"
 $timestamp = Get-Date -Format "yyyyMMddHHmmss"
 $artifactKey = "$artifactPrefix/stayrate-api-$timestamp.zip"
+$stackName = "StayRateDevStack"
 
 $existingBucketRaw = aws s3api list-buckets --query "Buckets[?Name=='$artifactBucket'].Name" --output text
 $existingBucket = if ($null -eq $existingBucketRaw) { "" } else { "$existingBucketRaw".Trim() }
@@ -92,11 +106,22 @@ Push-Location "infra"
 try {
     Invoke-Checked -Command { cdk bootstrap "aws://$accountId/$Region" | Out-Null } -FailureMessage "CDK bootstrap failed."
     Invoke-Checked -Command {
-        cdk deploy StayRateDevStack `
-            --require-approval never `
-            --parameters "LambdaArtifactBucket=$artifactBucket" `
-            --parameters "LambdaArtifactKey=$artifactKey" `
-            --parameters "LambdaArtifactObjectVersion=$objectVersion"
+        $deployArgs = @(
+            "deploy", $stackName,
+            "--require-approval", "never",
+            "--parameters", "LambdaArtifactBucket=$artifactBucket",
+            "--parameters", "LambdaArtifactKey=$artifactKey",
+            "--parameters", "LambdaArtifactObjectVersion=$objectVersion",
+            "-c", "environmentName=dev",
+            "-c", "enableCodeDeployCanary=$($canaryEnabled.ToString().ToLowerInvariant())"
+        )
+        if (-not [string]::IsNullOrWhiteSpace($AlertEmail)) {
+            $deployArgs += @("-c", "alertEmail=$AlertEmail")
+        }
+        if (-not [string]::IsNullOrWhiteSpace($SlackWebhookUrl)) {
+            $deployArgs += @("-c", "slackWebhookUrl=$SlackWebhookUrl")
+        }
+        & cdk @deployArgs
     } -FailureMessage "CDK deploy failed."
 }
 finally {
@@ -104,7 +129,7 @@ finally {
 }
 
 Invoke-Checked -Command {
-    aws cloudformation describe-stacks --stack-name StayRateDevStack --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text | Out-File -FilePath (Join-Path $tempDir "stayrate-endpoint.txt") -Encoding ascii
+    aws cloudformation describe-stacks --stack-name $stackName --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text | Out-File -FilePath (Join-Path $tempDir "stayrate-endpoint.txt") -Encoding ascii
 } -FailureMessage "Failed to fetch API endpoint from CloudFormation outputs."
 $apiEndpoint = (Get-Content (Join-Path $tempDir "stayrate-endpoint.txt") -Raw).Trim()
 

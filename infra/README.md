@@ -1,13 +1,26 @@
 # StayRate Infra
 
-This CDK app deploys the `dev` serverless stack:
+This CDK app deploys two serverless stacks:
+
+- `StayRateDevStack`
+- `StayRateProdStack`
+
+Each stack includes:
 
 - Lambda function for `StayRate.Api`
-- Lambda alias (`live`) with CodeDeploy canary rollout (`10% for 5 minutes`)
+- Lambda alias (`live`)
 - API Gateway HTTP API
 - DynamoDB table: bookings
 - DynamoDB table: idempotency
+- SNS topic for alerts
+- Alerts relay Lambda subscribed to SNS
+- CloudWatch alarms and dashboard
 - SSM parameters for table names
+
+Environment differences:
+
+- `dev`: table removal policy `DESTROY`, log retention `2 weeks`
+- `prod`: table removal policy `RETAIN`, log retention `1 month`
 
 ## Prerequisites
 
@@ -16,7 +29,7 @@ This CDK app deploys the `dev` serverless stack:
 - .NET SDK installed
 - Amazon Lambda .NET tool installed (`Amazon.Lambda.Tools`)
 
-## Deploy
+## Deploy Dev
 
 From repo root:
 
@@ -24,22 +37,43 @@ From repo root:
 powershell -ExecutionPolicy Bypass -File .\scripts\deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2
 ```
 
+## Deploy Prod
+
+From repo root:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\deploy-prod.ps1 -Profile stayrate-dev -Region eu-west-2 -EnableCodeDeployCanary false
+```
+
 The script will:
 
 1. Package Lambda artifact from `src/StayRate.Api`
 2. Upload artifact to S3
 3. Bootstrap CDK (if needed)
-4. Deploy `StayRateDevStack`
+4. Deploy selected stack
 5. Print deployed API endpoint
 
-## GitHub Actions Deploy
+## CodeDeploy Canary
 
-Workflow: `.github/workflows/deploy-dev.yml`
+Canary rollout is controlled via `enableCodeDeployCanary=true` CDK context.
+
+If your AWS account does not have CodeDeploy enabled for this service, deploy scripts fail fast with a clear message.
+
+## GitHub Actions Deploy
 
 Required repository variable:
 
 - `AWS_DEPLOY_ROLE_ARN` = IAM role ARN assumed by GitHub OIDC
 The workflow has a fallback to `arn:aws:iam::762397612240:role/stayrate-github-deploy-role` if this variable is not set.
+
+Workflows:
+
+- `.github/workflows/deploy-dev.yml` (push + manual)
+- `.github/workflows/deploy-prod.yml` (manual, GitHub `production` environment)
+
+Optional variable for prod:
+
+- `AWS_DEPLOY_ROLE_ARN_PROD`
 
 Trust policy for the IAM role:
 
