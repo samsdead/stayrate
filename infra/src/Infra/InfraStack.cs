@@ -2,11 +2,13 @@ using System.Collections.Generic;
 using Amazon.CDK;
 using Amazon.CDK.AWS.Apigatewayv2;
 using Amazon.CDK.AWS.CloudWatch;
+using Amazon.CDK.AWS.CloudWatch.Actions;
 using Amazon.CDK.AWS.CodeDeploy;
 using Amazon.CDK.AWS.DynamoDB;
 using Amazon.CDK.AWS.IAM;
 using Amazon.CDK.AWS.Lambda;
 using Amazon.CDK.AWS.S3;
+using Amazon.CDK.AWS.SNS;
 using Constructs;
 
 namespace Infra;
@@ -160,6 +162,51 @@ public class InfraStack : Stack
             TreatMissingData = TreatMissingData.NOT_BREACHING
         });
 
+        var alertsTopic = new Topic(this, "StayRateDevAlertsTopic", new TopicProps
+        {
+            TopicName = "stayrate-dev-alerts"
+        });
+
+        var snsAction = new SnsAction(alertsTopic);
+        lambdaErrorsAlarm.AddAlarmAction(snsAction);
+        api5xxAlarm.AddAlarmAction(snsAction);
+
+        var dashboard = new Dashboard(this, "StayRateDevDashboard", new DashboardProps
+        {
+            DashboardName = "stayrate-dev"
+        });
+        dashboard.AddWidgets(
+            new GraphWidget(new GraphWidgetProps
+            {
+                Title = "Lambda Errors",
+                Left = [liveAlias.MetricErrors(new MetricOptions { Period = Duration.Minutes(1), Statistic = "Sum" })],
+                Width = 12
+            }),
+            new GraphWidget(new GraphWidgetProps
+            {
+                Title = "API 5XX",
+                Left = [new Metric(new MetricProps
+                {
+                    Namespace = "AWS/ApiGateway",
+                    MetricName = "5xx",
+                    Period = Duration.Minutes(1),
+                    Statistic = "Sum",
+                    DimensionsMap = new Dictionary<string, string>
+                    {
+                        ["ApiId"] = httpApi.Ref,
+                        ["Stage"] = "$default"
+                    }
+                })],
+                Width = 12
+            }));
+        dashboard.AddWidgets(
+            new GraphWidget(new GraphWidgetProps
+            {
+                Title = "Lambda P95 Duration (ms)",
+                Left = [liveAlias.MetricDuration(new MetricOptions { Period = Duration.Minutes(1), Statistic = "p95" })],
+                Width = 24
+            }));
+
         if (enableCodeDeployCanary)
         {
             var deploymentApplication = new LambdaApplication(this, "StayRateApiDeploymentApplication", new LambdaApplicationProps
@@ -207,6 +254,11 @@ public class InfraStack : Stack
         _ = new CfnOutput(this, "ApiEndpoint", new CfnOutputProps
         {
             Value = httpApi.AttrApiEndpoint
+        });
+
+        _ = new CfnOutput(this, "AlertsTopicArn", new CfnOutputProps
+        {
+            Value = alertsTopic.TopicArn
         });
     }
 }
