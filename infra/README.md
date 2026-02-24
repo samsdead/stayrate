@@ -70,7 +70,6 @@ If your AWS account does not have CodeDeploy enabled for this service, deploy sc
 Required repository variable:
 
 - `AWS_DEPLOY_ROLE_ARN` = IAM role ARN assumed by GitHub OIDC
-The workflow has a fallback to `arn:aws:iam::762397612240:role/stayrate-github-deploy-role` if this variable is not set.
 
 Workflows:
 
@@ -88,7 +87,6 @@ IAM deploy policy:
 
 - `infra/iam/stayrate-github-deploy-inline-policy.json`
 - Attach as inline policy to `stayrate-github-deploy-role`
-- Remove `AdministratorAccess` after validating deploy workflow
 
 ## Cost Guardrails
 
@@ -179,7 +177,8 @@ aws iam create-role \
   --role-name stayrate-github-deploy-role \
   --assume-role-policy-document file://trust-policy.json
 
-aws iam attach-role-policy \
+aws iam put-role-policy \
   --role-name stayrate-github-deploy-role \
-  --policy-arn arn:aws:iam::aws:policy/AdministratorAccess
+  --policy-name stayrate-github-deploy-inline \
+  --policy-document file://infra/iam/stayrate-github-deploy-inline-policy.json
 ```
