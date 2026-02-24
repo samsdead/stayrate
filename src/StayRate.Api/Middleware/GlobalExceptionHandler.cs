@@ -44,6 +44,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
             Type = $"https://httpstatuses.com/{statusCode}",
             Instance = httpContext.Request.Path
         };
+        httpContext.Response.StatusCode = statusCode;
         problem.Extensions["traceId"] = httpContext.TraceIdentifier;
 
         if (exception is IdempotencyConflictException idempotencyConflictException)
