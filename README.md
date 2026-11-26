@@ -69,7 +69,8 @@ Use the property ID above, a `nightly` line item described as `Nightly rate` wit
 
 ## Deployment
 
-- Dev deploy workflow: `.github/workflows/deploy-dev.yml` (auto on push to `master`)
+- Repository checks run automatically on pull requests and pushes to `master`.
+- Dev deploy workflow: `.github/workflows/deploy-dev.yml` (manual after the development environment is configured)
 - Prod deploy workflow: `.github/workflows/deploy-prod.yml` (manual, semantic tag input)
 - Release workflow: `.github/workflows/release.yml` (`v*.*.*` tags)
 

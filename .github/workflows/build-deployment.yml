@@ -12,6 +12,9 @@ on:
       enable_canary:
         type: boolean
         default: false
+      publish_artifact:
+        type: boolean
+        default: true
     outputs:
       artifact_id:
         value: ${{ jobs.build.outputs.artifact_id }}
@@ -54,7 +57,9 @@ jobs:
       - name: Set up .NET
         uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
         with:
-          dotnet-version: '10.0.404'
+          dotnet-version: |
+            8.0.x
+            10.0.404
 
       - name: Set up Node
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
@@ -64,6 +69,17 @@ jobs:
 
       - name: Build and test
         run: dotnet test StayRate.slnx -c Release -p:NuGetAuditMode=all -warnaserror:NU1903,NU1904
+
+      - name: Check Git history for committed credentials
+        run: |
+          scanner="$RUNNER_TEMP/gitleaks.tar.gz"
+          curl --fail --silent --show-error --location --output "$scanner" https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          printf '%s  %s\n' '551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb' "$scanner" | sha256sum --check --strict
+          tar -xzf "$scanner" -C "$RUNNER_TEMP" gitleaks
+          printf '[extend]\nuseDefault = true\n' > "$RUNNER_TEMP/gitleaks.toml"
+          touch "$RUNNER_TEMP/gitleaks.ignore"
+          "$RUNNER_TEMP/gitleaks" git --redact=100 --no-banner --log-opts='--all' \
+            --config "$RUNNER_TEMP/gitleaks.toml" --gitleaks-ignore-path "$RUNNER_TEMP/gitleaks.ignore" --ignore-gitleaks-allow
 
       - name: Package function and synthesize template
         env:
@@ -104,6 +120,7 @@ jobs:
           )
 
       - name: Upload verified build artifacts
+        if: inputs.publish_artifact
         id: upload
         uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
         with:
