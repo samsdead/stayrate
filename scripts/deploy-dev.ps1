@@ -3,7 +3,9 @@ param(
     [string]$Region = "eu-west-2",
     [string]$EnableCodeDeployCanary = "false",
     [string]$AlertEmail = "",
-    [string]$SlackWebhookUrl = ""
+    [string]$SlackWebhookSecretArn = "",
+    [string]$BookingCatalogPath = "",
+    [string]$ServiceRoleBoundaryArn = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,7 +27,16 @@ function Invoke-Checked {
     }
 }
 
-$tempDir = [System.IO.Path]::GetTempPath()
+$configureSlackWebhook = $PSBoundParameters.ContainsKey("SlackWebhookSecretArn")
+$bookingCatalogJson = ""
+if (-not [string]::IsNullOrWhiteSpace($BookingCatalogPath)) {
+    $bookingCatalogJson = Get-Content -LiteralPath $BookingCatalogPath -Raw
+    $config = $bookingCatalogJson | ConvertFrom-Json
+    if ($null -eq $config.Bookings.Properties) {
+        throw "The booking catalog must contain Bookings.Properties."
+    }
+    $bookingCatalogJson = $config | ConvertTo-Json -Depth 12 -Compress
+}
 if ([string]::IsNullOrWhiteSpace($EnableCodeDeployCanary)) {
     $EnableCodeDeployCanary = "false"
 }
@@ -43,10 +54,8 @@ if ($canaryEnabled) {
     }
 }
 
-$accountFile = Join-Path $tempDir "stayrate-account.txt"
-Invoke-Checked -Command { aws sts get-caller-identity --query Account --output text | Out-File -FilePath $accountFile -Encoding ascii } -FailureMessage "Failed to resolve AWS account id."
-$accountId = (Get-Content $accountFile -Raw).Trim()
-if ([string]::IsNullOrWhiteSpace($accountId)) {
+$accountId = aws sts get-caller-identity --query Account --output text
+if ($LASTEXITCODE -ne 0 -or $accountId -notmatch '^\d{12}$') {
     throw "Could not resolve AWS account id."
 }
 
@@ -91,20 +100,13 @@ Invoke-Checked -Command {
         --msbuild-parameters "/p:SelfContained=true /p:PublishSingleFile=true /p:RuntimeIdentifier=linux-arm64 /p:InvariantGlobalization=true"
 } -FailureMessage "Failed to package Lambda artifact."
 
-Invoke-Checked -Command { aws s3 cp $artifactPath "s3://$artifactBucket/$artifactKey" | Out-Null } -FailureMessage "Failed to upload Lambda artifact to S3."
-
-$objectVersionFile = Join-Path $tempDir "stayrate-object-version.txt"
-Invoke-Checked -Command {
-    aws s3api head-object --bucket $artifactBucket --key $artifactKey --query VersionId --output text | Out-File -FilePath $objectVersionFile -Encoding ascii
-} -FailureMessage "Failed to resolve S3 object version for Lambda artifact."
-$objectVersion = (Get-Content $objectVersionFile -Raw).Trim()
-if ([string]::IsNullOrWhiteSpace($objectVersion) -or $objectVersion -eq "None") {
-    throw "S3 object version was not returned for Lambda artifact."
+$objectVersion = aws s3api put-object --bucket $artifactBucket --key $artifactKey --body $artifactPath --expected-bucket-owner $accountId --checksum-algorithm SHA256 --query VersionId --output text
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($objectVersion) -or $objectVersion -in @("None", "null")) {
+    throw "S3 did not return a version for the uploaded Lambda artifact."
 }
 
 Push-Location "infra"
 try {
-    Invoke-Checked -Command { cdk bootstrap "aws://$accountId/$Region" | Out-Null } -FailureMessage "CDK bootstrap failed."
     Invoke-Checked -Command {
         $deployArgs = @(
             "deploy", $stackName,
@@ -118,8 +120,14 @@ try {
         if (-not [string]::IsNullOrWhiteSpace($AlertEmail)) {
             $deployArgs += @("-c", "alertEmail=$AlertEmail")
         }
-        if (-not [string]::IsNullOrWhiteSpace($SlackWebhookUrl)) {
-            $deployArgs += @("-c", "slackWebhookUrl=$SlackWebhookUrl")
+        if ($configureSlackWebhook) {
+            $deployArgs += @("--parameters", "SlackWebhookSecretArn=$SlackWebhookSecretArn")
+        }
+        if ($ServiceRoleBoundaryArn) {
+            $deployArgs += @("--parameters", "ServiceRoleBoundaryArn=$ServiceRoleBoundaryArn")
+        }
+        if ($bookingCatalogJson) {
+            $deployArgs += @("--parameters", "BookingCatalogJson=$bookingCatalogJson")
         }
         & cdk @deployArgs
     } -FailureMessage "CDK deploy failed."
@@ -128,23 +136,9 @@ finally {
     Pop-Location
 }
 
-Invoke-Checked -Command {
-    aws cloudformation describe-stacks --stack-name $stackName --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue" --output text | Out-File -FilePath (Join-Path $tempDir "stayrate-endpoint.txt") -Encoding ascii
-} -FailureMessage "Failed to fetch API endpoint from CloudFormation outputs."
-$apiEndpoint = (Get-Content (Join-Path $tempDir "stayrate-endpoint.txt") -Raw).Trim()
-
-Write-Host "DEPLOY_COMPLETE"
-Write-Host "Account: $accountId"
-Write-Host "Region: $Region"
-Write-Host "Bucket: $artifactBucket"
-Write-Host "ArtifactKey: $artifactKey"
-Write-Host "ArtifactObjectVersion: $objectVersion"
-Write-Host "ApiEndpoint: $apiEndpoint"
-Write-Host "API_ENDPOINT=$apiEndpoint"
-
-if ($env:GITHUB_OUTPUT) {
-    Add-Content -Path $env:GITHUB_OUTPUT -Value "api_endpoint=$apiEndpoint"
-    Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_bucket=$artifactBucket"
-    Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_key=$artifactKey"
-    Add-Content -Path $env:GITHUB_OUTPUT -Value "artifact_object_version=$objectVersion"
+$apiEndpoint = aws cloudformation describe-stacks --stack-name $stackName --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue | [0]" --output text
+if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($apiEndpoint)) {
+    throw "Failed to fetch the API endpoint from CloudFormation outputs."
 }
+Write-Host "Deployment completed."
+Write-Output $apiEndpoint

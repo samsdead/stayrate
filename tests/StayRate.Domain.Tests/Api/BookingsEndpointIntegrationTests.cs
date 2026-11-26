@@ -1,3 +1,8 @@
+using Amazon.Lambda.APIGatewayEvents;
+using Amazon.Lambda.AspNetCoreServer;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -13,6 +18,7 @@ public sealed class BookingsEndpointIntegrationTests : IClassFixture<BookingsEnd
     public BookingsEndpointIntegrationTests(StayRateApiFactory factory)
     {
         _client = factory.CreateClient();
+        _client.DefaultRequestHeaders.Add("X-StayRate-Test-Authenticated", "test");
     }
 
     [Fact]
@@ -93,7 +99,59 @@ public sealed class BookingsEndpointIntegrationTests : IClassFixture<BookingsEnd
         Assert.Equal(409, problem.RootElement.GetProperty("status").GetInt32());
     }
 
-    private static object CreateValidRequest(string propertyId = "property-1")
+    [Fact]
+    public async Task Confirm_RequiresAuthenticatedCaller()
+    {
+        _client.DefaultRequestHeaders.Remove("X-StayRate-Test-Authenticated");
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/api/v1/bookings/confirm")
+        {
+            Content = JsonContent.Create(CreateValidRequest())
+        };
+        message.Headers.Add("Idempotency-Key", $"it-auth-{Guid.NewGuid():N}");
+
+        var result = await _client.SendAsync(message);
+
+        Assert.Equal(HttpStatusCode.Unauthorized, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task Confirm_UsesConfiguredQuote()
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/api/v1/bookings/confirm")
+        {
+            Content = JsonContent.Create(CreateValidRequest(total: 250m))
+        };
+        message.Headers.Add("Idempotency-Key", $"it-quote-{Guid.NewGuid():N}");
+
+        var result = await _client.SendAsync(message);
+
+        Assert.Equal(HttpStatusCode.UnprocessableEntity, result.StatusCode);
+    }
+
+    [Fact]
+    public async Task BookingQuote_CanBeSubmittedForConfirmation()
+    {
+        var details = new
+        {
+            propertyId = "property-1",
+            checkIn = "2026-04-01",
+            checkOut = "2026-04-03",
+            guests = 2
+        };
+        using var quote = await _client.PostAsJsonAsync("/api/v1/bookings/quote", details);
+        Assert.Equal(HttpStatusCode.OK, quote.StatusCode);
+
+        using var confirmation = new HttpRequestMessage(HttpMethod.Post, "/api/v1/bookings/confirm")
+        {
+            Content = new StringContent(await quote.Content.ReadAsStringAsync(), System.Text.Encoding.UTF8, "application/json")
+        };
+        confirmation.Headers.Add("Idempotency-Key", $"it-booking-quote-{Guid.NewGuid():N}");
+        using var result = await _client.SendAsync(confirmation);
+
+        Assert.Equal(HttpStatusCode.OK, result.StatusCode);
+    }
+
+    private static object CreateValidRequest(string propertyId = "property-1", decimal total = 200m)
     {
         return new
         {
@@ -116,9 +174,39 @@ public sealed class BookingsEndpointIntegrationTests : IClassFixture<BookingsEnd
             },
             total = new
             {
-                amount = 200m,
+                amount = total,
                 currency = "GBP"
             }
+        };
+    }
+
+    private sealed class GatewayTestContext : IStartupFilter
+    {
+        public Action<IApplicationBuilder> Configure(Action<IApplicationBuilder> next) => app =>
+        {
+            app.Use(async (context, pipeline) =>
+            {
+                if (context.Request.Headers["X-StayRate-Test-Authenticated"] == "test")
+                {
+                    context.Items[AbstractAspNetCoreFunction.LAMBDA_REQUEST_OBJECT] = new APIGatewayHttpApiV2ProxyRequest
+                    {
+                        RequestContext = new APIGatewayHttpApiV2ProxyRequest.ProxyRequestContext
+                        {
+                            RouteKey = $"POST {context.Request.Path}",
+                            Authorizer = new APIGatewayHttpApiV2ProxyRequest.AuthorizerDescription
+                            {
+                                IAM = new APIGatewayHttpApiV2ProxyRequest.AuthorizerDescription.IAMDescription
+                                {
+                                    AccountId = "000000000000",
+                                    UserId = "test-caller"
+                                }
+                            }
+                        }
+                    };
+                }
+                await pipeline(context);
+            });
+            next(app);
         };
     }
 
@@ -127,6 +215,15 @@ public sealed class BookingsEndpointIntegrationTests : IClassFixture<BookingsEnd
         protected override void ConfigureWebHost(IWebHostBuilder builder)
         {
             builder.UseEnvironment("Development");
+            builder.ConfigureAppConfiguration((_, configuration) => configuration.AddInMemoryCollection(
+                new[] { "property-1", "property-2" }.SelectMany(propertyId =>
+                    new Dictionary<string, string?>
+                    {
+                        [$"Bookings:Properties:{propertyId}:NightlyRate"] = "100",
+                        [$"Bookings:Properties:{propertyId}:Currency"] = "GBP",
+                        [$"Bookings:Properties:{propertyId}:MaxGuests"] = "4"
+                    })));
+            builder.ConfigureServices(services => services.AddSingleton<IStartupFilter, GatewayTestContext>());
         }
     }
 }

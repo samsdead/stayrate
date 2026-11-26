@@ -1,4 +1,6 @@
 ﻿
+using StayRate.Domain.Bookings;
+
 namespace StayRate.Application.Abstractions;
 
 public sealed record IdempotencyRecord(
@@ -12,4 +14,5 @@ public interface IIdempotencyStore
 {
     Task<IdempotencyRecord?> GetAsync(string key, CancellationToken ct);
     Task TryAddAsync(IdempotencyRecord record, CancellationToken ct);
+    Task<bool> TryAddBookingAsync(IdempotencyRecord record, Booking booking, string legacyKey, CancellationToken ct);
 }

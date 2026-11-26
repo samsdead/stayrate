@@ -37,7 +37,7 @@ public sealed class InfrastructureTests
     [Fact]
     public async Task InMemoryIdempotencyStore_AddAndGet_ReturnsStoredRecord()
     {
-        var store = new InMemoryIdempotencyStore();
+        var store = new InMemoryIdempotencyStore(new InMemoryBookingRepository());
         var record = new IdempotencyRecord("k1", "h1", Guid.NewGuid(), DateTimeOffset.UtcNow);
 
         await store.TryAddAsync(record, CancellationToken.None);
@@ -50,7 +50,7 @@ public sealed class InfrastructureTests
     [Fact]
     public async Task InMemoryIdempotencyStore_AddDuplicate_ThrowsInvalidOperationException()
     {
-        var store = new InMemoryIdempotencyStore();
+        var store = new InMemoryIdempotencyStore(new InMemoryBookingRepository());
         var record = new IdempotencyRecord("k2", "h2", Guid.NewGuid(), DateTimeOffset.UtcNow);
 
         await store.TryAddAsync(record, CancellationToken.None);

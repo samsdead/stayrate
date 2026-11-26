@@ -10,6 +10,10 @@
 
 # AWS local key export files
 *accessKeys.csv
+.aws/
+*.pem
+*.key
+*.p12
 
 # User-specific files
 *.rsuser

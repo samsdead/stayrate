@@ -2,116 +2,25 @@ name: Deploy Dev
 
 on:
   push:
-    branches:
-      - master
+    branches: [master]
   workflow_dispatch:
 
 permissions:
-  id-token: write
   contents: read
 
-env:
-  AWS_REGION: eu-west-2
-
 jobs:
+  build:
+    if: github.ref == 'refs/heads/master'
+    uses: ./.github/workflows/build-deployment.yml
+    with:
+      stage: development
+      source_ref: ${{ github.sha }}
+
   deploy:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
-      - name: Setup Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Restore
-        run: dotnet restore StayRate.slnx
-
-      - name: Build
-        run: dotnet build StayRate.slnx -c Release --no-restore
-
-      - name: Test
-        run: dotnet test StayRate.slnx -c Release --no-build
-
-      - name: Integration Quality Gate
-        run: dotnet test StayRate.slnx -c Release --no-build --filter "(FullyQualifiedName~BookingsEndpointIntegrationTests|FullyQualifiedName~DynamoDbRepositoryTests)"
-
-      - name: Install CDK
-        run: npm install -g aws-cdk
-
-      - name: Install Lambda Tools
-        run: |
-          dotnet tool install -g Amazon.Lambda.Tools
-          echo "$HOME/.dotnet/tools" >> "$GITHUB_PATH"
-
-      - name: Configure AWS Credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy Dev Stack
-        id: deploy
-        shell: pwsh
-        run: |
-          ./scripts/deploy-dev.ps1 -Region "${{ env.AWS_REGION }}" -EnableCodeDeployCanary "false"
-
-      - name: Smoke Test Health
-        run: |
-          set -euo pipefail
-          api="${{ steps.deploy.outputs.api_endpoint }}"
-          status=$(curl -sS -o /tmp/health.out -w "%{http_code}" "$api/health")
-          test "$status" = "200"
-          cat /tmp/health.out
-
-      - name: Smoke Test Confirm
-        run: |
-          set -euo pipefail
-          api="${{ steps.deploy.outputs.api_endpoint }}"
-          body='{"propertyId":"prop-gha-1","checkIn":"2026-03-20","checkOut":"2026-03-22","guests":2,"lineItems":[{"code":"nightly","description":"Nightly rate","amount":{"amount":100.00,"currency":"GBP"}}],"total":{"amount":200.00,"currency":"GBP"}}'
-          status=$(curl -sS -o /tmp/confirm.out -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            -H "Idempotency-Key: gha-smoke-${{ github.run_id }}" \
-            -X POST "$api/api/v1/bookings/confirm" \
-            -d "$body")
-          test "$status" = "200"
-          cat /tmp/confirm.out
-
-      - name: Smoke Test Idempotency Replay
-        run: |
-          set -euo pipefail
-          api="${{ steps.deploy.outputs.api_endpoint }}"
-          key="gha-replay-${{ github.run_id }}"
-          body='{"propertyId":"prop-gha-replay","checkIn":"2026-03-20","checkOut":"2026-03-22","guests":2,"lineItems":[{"code":"nightly","description":"Nightly rate","amount":{"amount":100.00,"currency":"GBP"}}],"total":{"amount":200.00,"currency":"GBP"}}'
-
-          status1=$(curl -sS -o /tmp/replay1.out -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            -H "Idempotency-Key: ${key}" \
-            -X POST "$api/api/v1/bookings/confirm" \
-            -d "$body")
-          test "$status1" = "200"
-
-          status2=$(curl -sS -o /tmp/replay2.out -w "%{http_code}" \
-            -H "Content-Type: application/json" \
-            -H "Idempotency-Key: ${key}" \
-            -X POST "$api/api/v1/bookings/confirm" \
-            -d "$body")
-          test "$status2" = "200"
-
-          python - <<'PY'
-          import json
-          with open('/tmp/replay1.out', 'r', encoding='utf-8') as f:
-              first = json.load(f)
-          with open('/tmp/replay2.out', 'r', encoding='utf-8') as f:
-              second = json.load(f)
-          assert first['bookingId'] == second['bookingId'], 'bookingId mismatch on idempotent replay'
-          assert first['quoteSnapshotHash'] == second['quoteSnapshotHash'], 'snapshot hash mismatch on replay'
-          print(first)
-          PY
+    needs: build
+    permissions:
+      id-token: write
+    uses: ./.github/workflows/deploy-stack.yml
+    with:
+      stage: development
+      artifact_id: ${{ needs.build.outputs.artifact_id }}

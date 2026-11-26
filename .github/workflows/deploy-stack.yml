@@ -1,0 +1,100 @@
+name: Deploy StayRate stack
+
+on:
+  workflow_call:
+    inputs:
+      stage:
+        required: true
+        type: string
+      artifact_id:
+        required: true
+        type: string
+
+permissions:
+  id-token: write
+
+concurrency:
+  group: stayrate-deploy-${{ inputs.stage }}
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.ref == 'refs/heads/master' && (inputs.stage == 'development' || inputs.stage == 'production')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    environment: ${{ inputs.stage }}
+    env:
+      AWS_REGION: eu-west-2
+      AWS_PAGER: ''
+      STAYRATE_STAGE: ${{ inputs.stage }}
+      STAYRATE_ACCOUNT_ID: ${{ vars.AWS_DEPLOY_ACCOUNT_ID }}
+      STAYRATE_DEPLOY_ROLE: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      STAYRATE_CLOUDFORMATION_ROLE: ${{ vars.AWS_CLOUDFORMATION_ROLE_ARN }}
+      STAYRATE_ROLE_BOUNDARY: ${{ vars.AWS_SERVICE_ROLE_BOUNDARY_ARN }}
+    steps:
+      - name: Download verified build artifacts
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          artifact-ids: ${{ inputs.artifact_id }}
+          path: ${{ runner.temp }}/stayrate-deployment
+
+      - name: Verify artifact and environment
+        working-directory: ${{ runner.temp }}/stayrate-deployment
+        run: |
+          set -euo pipefail
+          sha256sum --check --strict SHA256SUMS
+          case "$STAYRATE_STAGE" in
+            development) suffix=dev ;;
+            production) suffix=prod ;;
+            *) exit 1 ;;
+          esac
+          [[ "$STAYRATE_ACCOUNT_ID" =~ ^[0-9]{12}$ ]]
+          [[ "$STAYRATE_DEPLOY_ROLE" == "arn:aws:iam::$STAYRATE_ACCOUNT_ID:role/stayrate-github-$suffix" ]]
+          [[ "$STAYRATE_CLOUDFORMATION_ROLE" == "arn:aws:iam::$STAYRATE_ACCOUNT_ID:role/stayrate-$suffix-cloudformation" ]]
+          [[ "$STAYRATE_ROLE_BOUNDARY" == "arn:aws:iam::$STAYRATE_ACCOUNT_ID:policy/stayrate-$suffix-service-boundary" ]]
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@45666896f5d8e0f10ae255413f3a4cdd03bdc8f5 # v6.3.1
+        with:
+          role-to-assume: ${{ env.STAYRATE_DEPLOY_ROLE }}
+          aws-region: ${{ env.AWS_REGION }}
+          allowed-account-ids: ${{ env.STAYRATE_ACCOUNT_ID }}
+
+      - name: Deploy and verify public health
+        working-directory: ${{ runner.temp }}/stayrate-deployment
+        env:
+          CATALOG_JSON: ${{ secrets.BOOKING_CATALOG_JSON }}
+          SLACK_SECRET_ARN: ${{ vars.SLACK_WEBHOOK_SECRET_ARN }}
+        run: |
+          set -euo pipefail
+          case "$STAYRATE_STAGE" in
+            development) suffix=dev; stack=StayRateDevStack ;;
+            production) suffix=prod; stack=StayRateProdStack ;;
+            *) exit 1 ;;
+          esac
+          bucket="stayrate-$suffix-artifacts-$STAYRATE_ACCOUNT_ID-$AWS_REGION"
+          key="lambda/$GITHUB_SHA-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT.zip"
+          version=$(aws s3api put-object --bucket "$bucket" --key "$key" --body function.zip \
+            --checksum-algorithm SHA256 --expected-bucket-owner "$STAYRATE_ACCOUNT_ID" --query VersionId --output text)
+          [[ -n "$version" && "$version" != None && "$version" != null ]]
+
+          if [[ -z "$CATALOG_JSON" ]]; then
+            CATALOG_JSON='{"Bookings":{"Properties":{}}}'
+          fi
+          jq -e '.Bookings.Properties | type == "object"' <<< "$CATALOG_JSON" > /dev/null
+          parameters=(
+            "LambdaArtifactBucket=$bucket" "LambdaArtifactKey=$key" "LambdaArtifactObjectVersion=$version"
+            "BookingCatalogJson=$CATALOG_JSON" "SlackWebhookSecretArn=$SLACK_SECRET_ARN"
+            "ServiceRoleBoundaryArn=$STAYRATE_ROLE_BOUNDARY"
+          )
+          aws cloudformation deploy --stack-name "$stack" --template-file template.json \
+            --role-arn "$STAYRATE_CLOUDFORMATION_ROLE" --capabilities CAPABILITY_IAM \
+            --parameter-overrides "${parameters[@]}" --no-fail-on-empty-changeset > /dev/null
+
+          endpoint=$(aws cloudformation describe-stacks --stack-name "$stack" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiEndpoint'].OutputValue | [0]" --output text)
+          [[ "$endpoint" =~ ^https://[a-z0-9]+\.execute-api\.eu-west-2\.amazonaws\.com$ ]]
+          for path in health ready; do
+            status=$(curl --silent --output /dev/null --max-time 10 --write-out '%{http_code}' "$endpoint/$path")
+            [[ "$status" == 200 ]]
+          done

@@ -1,26 +1,45 @@
-using System.Collections.Concurrent;
 using StayRate.Application.Abstractions;
+using StayRate.Domain.Bookings;
+using StayRate.Infrastructure.Persistence;
 
 namespace StayRate.Infrastructure.Idempotency;
 
-public sealed class InMemoryIdempotencyStore : IIdempotencyStore
+public sealed class InMemoryIdempotencyStore(InMemoryBookingRepository bookings) : IIdempotencyStore
 {
-    private readonly ConcurrentDictionary<string, IdempotencyRecord> _records = new(StringComparer.Ordinal);
+    private readonly object _gate = new();
+    private readonly Dictionary<string, IdempotencyRecord> _records = new(StringComparer.Ordinal);
 
     public Task<IdempotencyRecord?> GetAsync(string key, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        _records.TryGetValue(key, out var record);
-        return Task.FromResult<IdempotencyRecord?>(record);
+        lock (_gate)
+            return Task.FromResult(_records.GetValueOrDefault(key));
     }
 
     public Task TryAddAsync(IdempotencyRecord record, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-
-        if (!_records.TryAdd(record.Key, record))
-            throw new InvalidOperationException($"Idempotency key '{record.Key}' already exists.");
+        lock (_gate)
+        {
+            if (!_records.TryAdd(record.Key, record))
+                throw new InvalidOperationException("The idempotency record already exists.");
+        }
 
         return Task.CompletedTask;
+    }
+
+    public Task<bool> TryAddBookingAsync(
+        IdempotencyRecord record, Booking booking, string legacyKey, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+        {
+            if (_records.ContainsKey(record.Key) || _records.ContainsKey(legacyKey))
+                return Task.FromResult(false);
+
+            bookings.Add(booking);
+            _records.Add(record.Key, record);
+            return Task.FromResult(true);
+        }
     }
 }

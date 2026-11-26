@@ -32,23 +32,23 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
         };
 
         if (statusCode >= 500)
-            _logger.LogError(exception, "Unhandled exception");
-        else
-            _logger.LogWarning(exception, "Handled exception");
+            _logger.LogError("Unhandled {ExceptionType}", exception.GetType().Name);
 
         var problem = new ProblemDetails
         {
             Status = statusCode,
             Title = GetTitle(statusCode),
-            Detail = exception.Message,
-            Type = $"https://httpstatuses.com/{statusCode}",
-            Instance = httpContext.Request.Path
+            Detail = statusCode switch
+            {
+                StatusCodes.Status409Conflict => "This idempotency key cannot be used for this request.",
+                StatusCodes.Status422UnprocessableEntity => "The request could not be applied. Confirm that the details match a current quote.",
+                StatusCodes.Status400BadRequest => "Check that all required fields have valid values.",
+                _ => "An unexpected error occurred."
+            },
+            Type = $"https://httpstatuses.com/{statusCode}"
         };
         httpContext.Response.StatusCode = statusCode;
         problem.Extensions["traceId"] = httpContext.TraceIdentifier;
-
-        if (exception is IdempotencyConflictException idempotencyConflictException)
-            problem.Extensions["idempotencyKey"] = idempotencyConflictException.IdempotencyKey;
 
         return await _problemDetailsService.TryWriteAsync(new ProblemDetailsContext
         {

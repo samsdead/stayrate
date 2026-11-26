@@ -1,0 +1,113 @@
+name: Build StayRate deployment
+
+on:
+  workflow_call:
+    inputs:
+      stage:
+        required: true
+        type: string
+      source_ref:
+        required: true
+        type: string
+      enable_canary:
+        type: boolean
+        default: false
+    outputs:
+      artifact_id:
+        value: ${{ jobs.build.outputs.artifact_id }}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    outputs:
+      artifact_id: ${{ steps.upload.outputs.artifact-id }}
+    steps:
+      - name: Checkout trusted branch history
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Select reviewed revision
+        env:
+          SOURCE_REF: ${{ inputs.source_ref }}
+          DEPLOYMENT_STAGE: ${{ inputs.stage }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOYMENT_STAGE" in
+            development)
+              [[ "$SOURCE_REF" =~ ^[a-f0-9]{40}$ && "$SOURCE_REF" == "$(git rev-parse HEAD)" ]]
+              ;;
+            production)
+              [[ "$SOURCE_REF" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+              release_commit=$(git rev-parse --verify "refs/tags/$SOURCE_REF^{commit}")
+              git merge-base --is-ancestor "$release_commit" HEAD
+              git checkout --detach "$release_commit"
+              ;;
+            *) exit 1 ;;
+          esac
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@0f4a354dd5547a28c70b7853dbd95d5b67886e73 # v6.1.0
+        with:
+          dotnet-version: '10.0.404'
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24.22.1'
+          package-manager-cache: false
+
+      - name: Build and test
+        run: dotnet test StayRate.slnx -c Release -p:NuGetAuditMode=all -warnaserror:NU1903,NU1904
+
+      - name: Package function and synthesize template
+        env:
+          DEPLOYMENT_STAGE: ${{ inputs.stage }}
+          ENABLE_CANARY: ${{ inputs.enable_canary }}
+        run: |
+          set -euo pipefail
+          case "$DEPLOYMENT_STAGE" in
+            development) stack=StayRateDevStack ;;
+            production) stack=StayRateProdStack ;;
+            *) exit 1 ;;
+          esac
+
+          mkdir -p "$RUNNER_TEMP/stayrate-deployment"
+          dotnet tool install Amazon.Lambda.Tools --version 7.0.0 --allow-roll-forward --tool-path "$RUNNER_TEMP/stayrate-tools"
+          "$RUNNER_TEMP/stayrate-tools/dotnet-lambda" package \
+            --project-location src/StayRate.Api --configuration Release --framework net10.0 \
+            --function-architecture arm64 --output-package "$RUNNER_TEMP/stayrate-deployment/function.zip" \
+            --disable-interactive true \
+            --msbuild-parameters '/p:SelfContained=true /p:PublishSingleFile=true /p:RuntimeIdentifier=linux-arm64 /p:InvariantGlobalization=true'
+          npm install --global aws-cdk@2.1149.0
+          (
+            cd infra
+            cdk synth "$stack" --strict --output "$RUNNER_TEMP/stayrate-templates" \
+              -c "enableCodeDeployCanary=$ENABLE_CANARY" > /dev/null
+          )
+          cp "$RUNNER_TEMP/stayrate-templates/$stack.template.json" "$RUNNER_TEMP/stayrate-deployment/template.json"
+          jq -e '
+            [.Resources[] | select(.Type == "AWS::ApiGatewayV2::Route") |
+             [.Properties.RouteKey, .Properties.AuthorizationType]] | sort
+            == [["GET /health", "NONE"], ["GET /ready", "NONE"],
+                ["POST /api/v1/bookings/confirm", "AWS_IAM"], ["POST /api/v1/bookings/quote", "AWS_IAM"],
+                ["POST /api/v1/quote", "NONE"]]
+          ' "$RUNNER_TEMP/stayrate-deployment/template.json" > /dev/null
+          (
+            cd "$RUNNER_TEMP/stayrate-deployment"
+            sha256sum function.zip template.json > SHA256SUMS
+          )
+
+      - name: Upload verified build artifacts
+        id: upload
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6.0.0
+        with:
+          name: stayrate-deployment
+          path: ${{ runner.temp }}/stayrate-deployment
+          if-no-files-found: error
+          retention-days: 1

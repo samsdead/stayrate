@@ -25,7 +25,6 @@ public class InfraStack : Stack
         var removalPolicy = isProd ? RemovalPolicy.RETAIN : RemovalPolicy.DESTROY;
         var lambdaRetention = isProd ? RetentionDays.ONE_MONTH : RetentionDays.TWO_WEEKS;
         var alertEmail = Node.TryGetContext("alertEmail")?.ToString();
-        var slackWebhookUrl = Node.TryGetContext("slackWebhookUrl")?.ToString() ?? string.Empty;
         var enableCodeDeployCanary = string.Equals(
             Node.TryGetContext("enableCodeDeployCanary")?.ToString(),
             "true",
@@ -48,6 +47,47 @@ public class InfraStack : Stack
             Type = "String",
             Description = "S3 object version for the Lambda deployment artifact"
         });
+
+        var bookingCatalog = new CfnParameter(this, "BookingCatalogJson", new CfnParameterProps
+        {
+            Type = "String",
+            Default = "{}",
+            MaxLength = 3000,
+            NoEcho = true,
+            Description = "JSON containing server-owned booking rates"
+        });
+        var slackSecret = new CfnParameter(this, "SlackWebhookSecretArn", new CfnParameterProps
+        {
+            Type = "String",
+            Default = "",
+            AllowedPattern = "^$|^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$",
+            Description = "Optional full Secrets Manager ARN for the Slack webhook URL"
+        });
+        var slackEnabled = new CfnCondition(this, "SlackRelayEnabled", new CfnConditionProps
+        {
+            Expression = Fn.ConditionNot(Fn.ConditionEquals(slackSecret.ValueAsString, ""))
+        });
+
+        var serviceRoleBoundary = new CfnParameter(this, "ServiceRoleBoundaryArn", new CfnParameterProps
+        {
+            Type = "String",
+            Default = "",
+            AllowedPattern = "^$|^arn:[^:]+:iam::[0-9]{12}:policy/.+$",
+            Description = "Permissions boundary for stack-managed IAM service roles"
+        });
+        var boundaryConfigured = new CfnCondition(this, "ServiceRoleBoundaryConfigured", new CfnConditionProps
+        {
+            Expression = Fn.ConditionNot(Fn.ConditionEquals(serviceRoleBoundary.ValueAsString, ""))
+        });
+
+        void ApplyRoleBoundary(IRole role)
+        {
+            if (role.Node.DefaultChild is CfnRole managedRole)
+            {
+                managedRole.AddPropertyOverride("PermissionsBoundary",
+                    Fn.ConditionIf(boundaryConfigured.LogicalId, serviceRoleBoundary.ValueAsString, Aws.NO_VALUE));
+            }
+        }
 
         var bookingsTable = new Table(this, "BookingsTable", new TableProps
         {
@@ -101,12 +141,22 @@ public class InfraStack : Stack
                 ["ASPNETCORE_ENVIRONMENT"] = isProd ? "Production" : "Cloud",
                 ["Persistence__Provider"] = "DynamoDb",
                 ["Bookings__TableName"] = bookingsTable.TableName,
-                ["Idempotency__TableName"] = idempotencyTable.TableName
+                ["Idempotency__TableName"] = idempotencyTable.TableName,
+                ["STAYRATE_BOOKING_CATALOG_JSON"] = bookingCatalog.ValueAsString
             }
         });
 
-        bookingsTable.GrantReadWriteData(apiLambda);
-        idempotencyTable.GrantReadWriteData(apiLambda);
+        ApplyRoleBoundary(apiLambda.Role);
+        apiLambda.AddToRolePolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Actions = ["dynamodb:GetItem", "dynamodb:PutItem"],
+            Resources = [bookingsTable.TableArn, idempotencyTable.TableArn]
+        }));
+        apiLambda.AddToRolePolicy(new PolicyStatement(new PolicyStatementProps
+        {
+            Actions = ["dynamodb:ConditionCheckItem"],
+            Resources = [idempotencyTable.TableArn]
+        }));
 
         var liveAlias = new Alias(this, "StayRateApiLiveAlias", new AliasProps
         {
@@ -128,26 +178,60 @@ public class InfraStack : Stack
             PayloadFormatVersion = "2.0"
         });
 
-        _ = new CfnRoute(this, "StayRateHttpApiDefaultRoute", new CfnRouteProps
+        const string bookingQuoteRouteKey = "POST /api/v1/bookings/quote";
+        const string bookingRouteKey = "POST /api/v1/bookings/confirm";
+        var routes = new[]
         {
-            ApiId = httpApi.Ref,
-            RouteKey = "$default",
-            Target = $"integrations/{integration.Ref}"
-        });
-
-        _ = new CfnStage(this, "StayRateHttpApiDefaultStage", new CfnStageProps
+            CreateRoute("Health", "GET /health", "NONE"),
+            CreateRoute("Ready", "GET /ready", "NONE"),
+            CreateRoute("Quote", "POST /api/v1/quote", "NONE"),
+            CreateRoute("BookingQuote", bookingQuoteRouteKey, "AWS_IAM"),
+            CreateRoute("ConfirmBooking", bookingRouteKey, "AWS_IAM")
+        };
+        var stage = new CfnStage(this, "StayRateHttpApiDefaultStage", new CfnStageProps
         {
             ApiId = httpApi.Ref,
             StageName = "$default",
-            AutoDeploy = true
+            AutoDeploy = true,
+            DefaultRouteSettings = new CfnStage.RouteSettingsProperty
+            {
+                ThrottlingRateLimit = isProd ? 25 : 10,
+                ThrottlingBurstLimit = isProd ? 50 : 20
+            },
+            RouteSettings = new Dictionary<string, object>
+            {
+                [bookingQuoteRouteKey] = new CfnStage.RouteSettingsProperty
+                {
+                    ThrottlingRateLimit = isProd ? 5 : 2,
+                    ThrottlingBurstLimit = isProd ? 10 : 4
+                },
+                [bookingRouteKey] = new CfnStage.RouteSettingsProperty
+                {
+                    ThrottlingRateLimit = isProd ? 5 : 2,
+                    ThrottlingBurstLimit = isProd ? 10 : 4
+                }
+            }
         });
+        foreach (var route in routes)
+            stage.AddResourceDependency(route);
 
-        liveAlias.AddPermission("AllowHttpApiInvoke", new Permission
+        CfnRoute CreateRoute(string id, string routeKey, string authorizationType)
         {
-            Principal = new ServicePrincipal("apigateway.amazonaws.com"),
-            Action = "lambda:InvokeFunction",
-            SourceArn = $"arn:aws:execute-api:{Region}:{Account}:{httpApi.Ref}/*/$default"
-        });
+            var methodAndPath = routeKey.Replace(" /", "/");
+            liveAlias.AddPermission($"Invoke{id}", new Permission
+            {
+                Principal = new ServicePrincipal("apigateway.amazonaws.com"),
+                Action = "lambda:InvokeFunction",
+                SourceArn = $"arn:{Partition}:execute-api:{Region}:{Account}:{httpApi.Ref}/$default/{methodAndPath}"
+            });
+            return new CfnRoute(this, $"StayRateHttpApi{id}Route", new CfnRouteProps
+            {
+                ApiId = httpApi.Ref,
+                RouteKey = routeKey,
+                AuthorizationType = authorizationType,
+                Target = $"integrations/{integration.Ref}"
+            });
+        }
 
         var lambdaErrorsAlarm = new Alarm(this, "StayRateApiLambdaErrorsAlarm", new AlarmProps
         {
@@ -198,24 +282,68 @@ public class InfraStack : Stack
             {
                 Retention = lambdaRetention
             }),
-            Code = Code.FromInline(
-                "import json\n" +
-                "import os\n" +
-                "import urllib.request\n\n" +
-                "def handler(event, context):\n" +
-                "    print(json.dumps(event))\n" +
-                "    url = os.environ.get('SLACK_WEBHOOK_URL', '').strip()\n" +
-                "    if not url:\n" +
-                "        return {'status': 'logged'}\n" +
-                "    body = json.dumps({'text': json.dumps(event)}).encode('utf-8')\n" +
-                "    request = urllib.request.Request(url, data=body, headers={'Content-Type': 'application/json'})\n" +
-                "    with urllib.request.urlopen(request, timeout=5) as response:\n" +
-                "        return {'statusCode': response.getcode()}\n"),
+            Code = Code.FromInline("""
+                import http.client
+                import json
+                import os
+                from urllib.parse import urlsplit
+
+                import boto3
+                from botocore.config import Config
+
+                secrets = boto3.client("secretsmanager", config=Config(
+                    connect_timeout=2, read_timeout=3, retries={"total_max_attempts": 1}
+                ))
+
+                def handler(event, context):
+                    secret_arn = os.environ.get("SLACK_WEBHOOK_SECRET_ARN", "")
+                    if not secret_arn:
+                        return {"status": "disabled"}
+
+                    url = urlsplit(secrets.get_secret_value(SecretId=secret_arn)["SecretString"].strip())
+                    if (url.scheme, url.netloc) != ("https", "hooks.slack.com") or not url.path.startswith("/services/"):
+                        raise RuntimeError("Invalid Slack webhook configuration")
+
+                    message = json.loads(event["Records"][0]["Sns"]["Message"])
+                    body = json.dumps({"text": f"{message['AlarmName']}: {message['NewStateValue']}"})
+                    connection = http.client.HTTPSConnection("hooks.slack.com", timeout=5)
+                    try:
+                        connection.request("POST", url.path, body, {"Content-Type": "application/json"})
+                        response = connection.getresponse()
+                        if response.status >= 300:
+                            raise RuntimeError("Slack rejected the alert")
+                    except (OSError, http.client.HTTPException):
+                        raise RuntimeError("Could not send the Slack alert") from None
+                    finally:
+                        connection.close()
+
+                    return {"status": "sent"}
+                """),
             Environment = new Dictionary<string, string>
             {
-                ["SLACK_WEBHOOK_URL"] = slackWebhookUrl
+                ["SLACK_WEBHOOK_SECRET_ARN"] = slackSecret.ValueAsString
             }
         });
+
+        ApplyRoleBoundary(alertRelayLambda.Role);
+
+        var slackAccess = new CfnPolicy(this, "StayRateSlackSecretAccess", new CfnPolicyProps
+        {
+            PolicyName = $"{resourcePrefix}-slack-webhook",
+            Roles = [alertRelayLambda.Role.RoleName],
+            PolicyDocument = new PolicyDocument(new PolicyDocumentProps
+            {
+                Statements =
+                [
+                    new PolicyStatement(new PolicyStatementProps
+                    {
+                        Actions = ["secretsmanager:GetSecretValue"],
+                        Resources = [slackSecret.ValueAsString]
+                    })
+                ]
+            }).ToJSON()
+        });
+        slackAccess.CfnOptions.Condition = slackEnabled;
         alertsTopic.AddSubscription(new LambdaSubscription(alertRelayLambda));
         if (!string.IsNullOrWhiteSpace(alertEmail))
             alertsTopic.AddSubscription(new EmailSubscription(alertEmail));
@@ -325,7 +453,7 @@ public class InfraStack : Stack
                 ApplicationName = $"{resourcePrefix}-api"
             });
 
-            _ = new LambdaDeploymentGroup(this, "StayRateApiDeploymentGroup", new LambdaDeploymentGroupProps
+            var deploymentGroup = new LambdaDeploymentGroup(this, "StayRateApiDeploymentGroup", new LambdaDeploymentGroupProps
             {
                 Application = deploymentApplication,
                 Alias = liveAlias,
@@ -338,6 +466,7 @@ public class InfraStack : Stack
                     DeploymentInAlarm = true
                 }
             });
+            ApplyRoleBoundary(deploymentGroup.Role);
         }
 
         _ = new Amazon.CDK.AWS.SSM.StringParameter(this, "BookingsTableNameParameter", new Amazon.CDK.AWS.SSM.StringParameterProps

@@ -14,11 +14,19 @@ sealed class Program
         };
         _ = new InfraStack(app, "StayRateDevStack", "dev", new StackProps
         {
-            Env = env
+            Env = env,
+            Synthesizer = new DefaultStackSynthesizer(new DefaultStackSynthesizerProps
+            {
+                GenerateBootstrapVersionRule = false
+            })
         });
         _ = new InfraStack(app, "StayRateProdStack", "prod", new StackProps
         {
-            Env = env
+            Env = env,
+            Synthesizer = new DefaultStackSynthesizer(new DefaultStackSynthesizerProps
+            {
+                GenerateBootstrapVersionRule = false
+            })
         });
         app.Synth();
     }

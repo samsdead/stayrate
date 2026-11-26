@@ -42,7 +42,8 @@ public static class DependencyInjection
             return services;
         }
 
-        services.AddSingleton<IBookingRepository, InMemoryBookingRepository>();
+        services.AddSingleton<InMemoryBookingRepository>();
+        services.AddSingleton<IBookingRepository>(provider => provider.GetRequiredService<InMemoryBookingRepository>());
         services.AddSingleton<IIdempotencyStore, InMemoryIdempotencyStore>();
         return services;
     }

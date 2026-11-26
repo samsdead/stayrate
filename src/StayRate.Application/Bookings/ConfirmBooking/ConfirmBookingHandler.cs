@@ -1,77 +1,60 @@
-﻿
 using StayRate.Application.Abstractions;
 using StayRate.Domain.Bookings;
+using StayRate.Domain.Common;
 
 namespace StayRate.Application.Bookings.ConfirmBooking;
 
-public sealed class ConfirmBookingHandler
+public sealed class ConfirmBookingHandler(
+    IBookingRepository bookings,
+    IIdempotencyStore idempotency,
+    IRequestHasher hasher,
+    IClock clock,
+    IBookingQuoteCatalog catalog)
 {
-    private readonly IBookingRepository _bookings;
-    private readonly IIdempotencyStore _idempotency;
-    private readonly IRequestHasher _hasher;
-    private readonly IClock _clock;
-
-    public ConfirmBookingHandler(
-        IBookingRepository bookings,
-        IIdempotencyStore idempotency,
-        IRequestHasher hasher,
-        IClock clock)
-    {
-        _bookings = bookings;
-        _idempotency = idempotency;
-        _hasher = hasher;
-        _clock = clock;
-    }
-
     public async Task<ConfirmBookingResult> HandleAsync(ConfirmBookingCommand cmd, CancellationToken ct)
     {
-        if (string.IsNullOrWhiteSpace(cmd.IdempotencyKey))
-            throw new ArgumentException("IdempotencyKey is required.", nameof(cmd.IdempotencyKey));
+        if (string.IsNullOrWhiteSpace(cmd.IdempotencyKey) || string.IsNullOrWhiteSpace(cmd.Caller))
+            throw new ArgumentException("A caller and idempotency key are required.");
 
-        if (cmd.Snapshot is null)
-            throw new ArgumentNullException(nameof(cmd.Snapshot));
-
-        var requestHash = _hasher.Hash(cmd.Snapshot);
-
-        var existing = await _idempotency.GetAsync(cmd.IdempotencyKey, ct);
+        var snapshot = cmd.Snapshot;
+        var requestHash = hasher.Hash(snapshot);
+        var scopedKey = "v2:" + hasher.Hash(new { cmd.Caller, cmd.IdempotencyKey });
+        var existing = await idempotency.GetAsync(scopedKey, ct);
         if (existing is not null)
-        {
-            if (!string.Equals(existing.RequestHash, requestHash, StringComparison.Ordinal))
-                throw new IdempotencyConflictException(cmd.IdempotencyKey);
+            return await ReplayAsync(existing, requestHash, ct);
 
-            var booking = await _bookings.GetByIdAsync(existing.ResultBookingId, ct);
-            if (booking is null)
-                throw new InvalidOperationException("Idempotency record exists but booking was not found.");
+        if (await idempotency.GetAsync(cmd.IdempotencyKey, ct) is not null)
+            throw new IdempotencyConflictException();
 
-            booking.Confirm(_clock.UtcNow);
+        var quote = catalog.FindQuote(snapshot.PropertyId, snapshot.CheckIn, snapshot.CheckOut, snapshot.Guests);
+        if (quote is null || !quote.Total.Equals(snapshot.Total) || !quote.LineItems.SequenceEqual(snapshot.LineItems))
+            throw new DomainRuleViolation("Booking details must match a current quote for this property.");
 
-            return new ConfirmBookingResult(
-                booking.Id,
-                booking.Status,
-                booking.QuoteSnapshotHash,
-                booking.CreatedAt,
-                booking.ConfirmedAt
-            );
-        }
+        var now = clock.UtcNow;
+        var booking = Booking.CreateFromQuoteSnapshot(quote, hasher.Hash(quote), now);
+        booking.Confirm(now);
 
-        var now = _clock.UtcNow;
+        var record = new IdempotencyRecord(scopedKey, requestHash, booking.Id, now);
+        if (await idempotency.TryAddBookingAsync(record, booking, cmd.IdempotencyKey, ct))
+            return ToResult(booking);
 
-        var newBooking = Booking.CreateFromQuoteSnapshot(cmd.Snapshot, requestHash, now);
-        newBooking.Confirm(now);
+        existing = await idempotency.GetAsync(scopedKey, ct);
+        if (existing is null)
+            throw new IdempotencyConflictException();
 
-        await _bookings.AddAsync(newBooking, ct);
-
-        await _idempotency.TryAddAsync(
-            new IdempotencyRecord(cmd.IdempotencyKey, requestHash, newBooking.Id, now),
-            ct
-        );
-
-        return new ConfirmBookingResult(
-            newBooking.Id,
-            newBooking.Status,
-            newBooking.QuoteSnapshotHash,
-            newBooking.CreatedAt,
-            newBooking.ConfirmedAt
-        );
+        return await ReplayAsync(existing, requestHash, ct);
     }
+
+    private async Task<ConfirmBookingResult> ReplayAsync(IdempotencyRecord existing, string requestHash, CancellationToken ct)
+    {
+        if (!string.Equals(existing.RequestHash, requestHash, StringComparison.Ordinal))
+            throw new IdempotencyConflictException();
+
+        var booking = await bookings.GetByIdAsync(existing.ResultBookingId, ct)
+            ?? throw new InvalidOperationException("Idempotency record exists without a booking.");
+        return ToResult(booking);
+    }
+
+    private static ConfirmBookingResult ToResult(Booking booking) =>
+        new(booking.Id, booking.Status, booking.QuoteSnapshotHash, booking.CreatedAt, booking.ConfirmedAt);
 }

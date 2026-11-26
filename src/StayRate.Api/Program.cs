@@ -1,7 +1,10 @@
+using System.Text;
 using Microsoft.AspNetCore.Diagnostics.HealthChecks;
 using Microsoft.AspNetCore.Mvc;
 using Amazon.Lambda.AspNetCoreServer;
+using StayRate.Api;
 using StayRate.Api.Middleware;
+using StayRate.Application.Abstractions;
 using StayRate.Application.Bookings.ConfirmBooking;
 using StayRate.Infrastructure;
 
@@ -9,8 +12,10 @@ var builder = WebApplication.CreateBuilder(args);
 
 builder.Configuration
     .AddJsonFile("appsettings.Local.json", optional: true, reloadOnChange: true)
-    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.local.json", optional: true, reloadOnChange: true)
-    .AddEnvironmentVariables();
+    .AddJsonFile($"appsettings.{builder.Environment.EnvironmentName}.local.json", optional: true, reloadOnChange: true);
+if (Environment.GetEnvironmentVariable("STAYRATE_BOOKING_CATALOG_JSON") is { Length: > 0 } catalog)
+    builder.Configuration.AddJsonStream(new MemoryStream(Encoding.UTF8.GetBytes(catalog)));
+builder.Configuration.AddEnvironmentVariables();
 
 if (builder.Environment.IsDevelopment())
 {
@@ -28,6 +33,8 @@ builder.Logging.AddJsonConsole(options =>
 builder.Services.AddControllers();
 builder.Services.AddInfrastructure(builder.Configuration);
 builder.Services.AddScoped<ConfirmBookingHandler>();
+builder.Services.AddSingleton<IBookingQuoteCatalog, BookingQuoteCatalog>();
+builder.Services.AddSingleton<BookingCaller>();
 builder.Services.AddAWSLambdaHosting(LambdaEventSource.HttpApi);
 builder.Services.AddProblemDetails();
 builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
@@ -37,12 +44,12 @@ builder.Services.Configure<ApiBehaviorOptions>(options =>
 {
     options.InvalidModelStateResponseFactory = context =>
     {
-        var problem = new ValidationProblemDetails(context.ModelState)
+        var problem = new ProblemDetails
         {
             Title = "Request validation failed.",
             Status = StatusCodes.Status400BadRequest,
             Type = "https://httpstatuses.com/400",
-            Instance = context.HttpContext.Request.Path
+            Detail = "Check that all required fields have valid values."
         };
         problem.Extensions["traceId"] = context.HttpContext.TraceIdentifier;
         return new BadRequestObjectResult(problem);
@@ -54,8 +61,8 @@ builder.Services.AddSwaggerGen();
 
 var app = builder.Build();
 
-app.UseExceptionHandler();
 app.UseMiddleware<RequestContextLoggingMiddleware>();
+app.UseExceptionHandler();
 app.UseHttpsRedirection();
 
 if (app.Environment.IsDevelopment())
