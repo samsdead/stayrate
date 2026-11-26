@@ -80,11 +80,11 @@ For Slack, point `SLACK_WEBHOOK_SECRET_ARN` at a same-account, same-region Secre
 From the repository root, with AWS CLI, a pre-bootstrapped CDK setup, .NET 10, and Amazon.Lambda.Tools:
 
 ```powershell
-./scripts/deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2
-./scripts/deploy-prod.ps1 -Profile stayrate-prod -Region eu-west-2 -EnableCodeDeployCanary false
+./scripts/deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2 -ServiceRoleBoundaryArn '<development-policy-arn>'
+./scripts/deploy-prod.ps1 -Profile stayrate-prod -Region eu-west-2 -ServiceRoleBoundaryArn '<production-policy-arn>' -EnableCodeDeployCanary false
 ```
 
-Either script accepts `BookingCatalogPath`, `SlackWebhookSecretArn`, `ServiceRoleBoundaryArn`, and `AlertEmail`. Use the GitHub workflows for routine releases. Configure budget alerts in AWS separately if the account needs cost notifications.
+Each script requires the ARN of its environment's service-role permissions boundary. Both accept `BookingCatalogPath`, `SlackWebhookSecretArn`, and `AlertEmail`. Use the GitHub workflows for routine releases. Configure budget alerts in AWS separately if the account needs cost notifications.
 
 ## Persistence Configuration
 

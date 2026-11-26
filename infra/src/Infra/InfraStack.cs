@@ -71,22 +71,16 @@ public class InfraStack : Stack
         var serviceRoleBoundary = new CfnParameter(this, "ServiceRoleBoundaryArn", new CfnParameterProps
         {
             Type = "String",
-            Default = "",
-            AllowedPattern = "^$|^arn:[^:]+:iam::[0-9]{12}:policy/.+$",
+            AllowedPattern = "^arn:[^:]+:iam::[0-9]{12}:policy/.+$",
             Description = "Permissions boundary for stack-managed IAM service roles"
-        });
-        var boundaryConfigured = new CfnCondition(this, "ServiceRoleBoundaryConfigured", new CfnConditionProps
-        {
-            Expression = Fn.ConditionNot(Fn.ConditionEquals(serviceRoleBoundary.ValueAsString, ""))
         });
 
         void ApplyRoleBoundary(IRole role)
         {
-            if (role.Node.DefaultChild is CfnRole managedRole)
-            {
-                managedRole.AddPropertyOverride("PermissionsBoundary",
-                    Fn.ConditionIf(boundaryConfigured.LogicalId, serviceRoleBoundary.ValueAsString, Aws.NO_VALUE));
-            }
+            if (role.Node.DefaultChild is not CfnRole managedRole)
+                throw new System.InvalidOperationException("A stack-managed service role is required.");
+
+            managedRole.PermissionsBoundary = serviceRoleBoundary.ValueAsString;
         }
 
         var bookingsTable = new Table(this, "BookingsTable", new TableProps

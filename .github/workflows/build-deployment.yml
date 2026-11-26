@@ -114,6 +114,10 @@ jobs:
                 ["POST /api/v1/bookings/confirm", "AWS_IAM"], ["POST /api/v1/bookings/quote", "AWS_IAM"],
                 ["POST /api/v1/quote", "NONE"]]
           ' "$RUNNER_TEMP/stayrate-deployment/template.json" > /dev/null
+          jq -e '
+            [.Resources[] | select(.Type == "AWS::IAM::Role")] |
+            length > 0 and all(.[]; .Properties.PermissionsBoundary == {"Ref": "ServiceRoleBoundaryArn"})
+          ' "$RUNNER_TEMP/stayrate-deployment/template.json" > /dev/null
           (
             cd "$RUNNER_TEMP/stayrate-deployment"
             sha256sum function.zip template.json > SHA256SUMS

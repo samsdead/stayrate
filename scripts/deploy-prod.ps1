@@ -5,7 +5,9 @@ param(
     [string]$AlertEmail = "",
     [string]$SlackWebhookSecretArn = "",
     [string]$BookingCatalogPath = "",
-    [string]$ServiceRoleBoundaryArn = ""
+    [Parameter(Mandatory = $true)]
+    [ValidatePattern('^arn:[^:]+:iam::[0-9]{12}:policy/.+$')]
+    [string]$ServiceRoleBoundaryArn
 )
 
 $ErrorActionPreference = "Stop"
@@ -123,9 +125,7 @@ try {
         if ($configureSlackWebhook) {
             $deployArgs += @("--parameters", "SlackWebhookSecretArn=$SlackWebhookSecretArn")
         }
-        if ($ServiceRoleBoundaryArn) {
-            $deployArgs += @("--parameters", "ServiceRoleBoundaryArn=$ServiceRoleBoundaryArn")
-        }
+        $deployArgs += @("--parameters", "ServiceRoleBoundaryArn=$ServiceRoleBoundaryArn")
         if ($bookingCatalogJson) {
             $deployArgs += @("--parameters", "BookingCatalogJson=$bookingCatalogJson")
         }
