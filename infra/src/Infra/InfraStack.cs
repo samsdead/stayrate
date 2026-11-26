@@ -61,6 +61,7 @@ public class InfraStack : Stack
             Type = "String",
             Default = "",
             AllowedPattern = "^$|^arn:[^:]+:secretsmanager:[^:]+:[0-9]{12}:secret:.+$",
+            NoEcho = true,
             Description = "Optional full Secrets Manager ARN for the Slack webhook URL"
         });
         var slackEnabled = new CfnCondition(this, "SlackRelayEnabled", new CfnConditionProps
