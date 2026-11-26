@@ -1,12 +1,4 @@
-﻿namespace StayRate.Application.Bookings.ConfirmBooking;
+namespace StayRate.Application.Bookings.ConfirmBooking;
 
-public sealed class IdempotencyConflictException : Exception
-{
-    public string IdempotencyKey { get; }
-
-    public IdempotencyConflictException(string idempotencyKey)
-        : base($"Idempotency-Key '{idempotencyKey}' was reused with a different request payload.")
-    {
-        IdempotencyKey = idempotencyKey;
-    }
-}
+public sealed class IdempotencyConflictException()
+    : Exception("This idempotency key cannot be used for this request.");

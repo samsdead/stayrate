@@ -22,80 +22,69 @@ Environment differences:
 - `dev`: table removal policy `DESTROY`, log retention `2 weeks`
 - `prod`: table removal policy `RETAIN`, log retention `1 month`, DynamoDB PITR `enabled`
 
-## Prerequisites
+## GitHub Actions deployment
 
-- AWS CLI configured (`AWS_PROFILE`, `AWS_REGION`)
-- CDK CLI installed
-- .NET SDK installed
-- Amazon Lambda .NET tool installed (`Amazon.Lambda.Tools`)
+Create two GitHub environments named `development` and `production`. Limit both to the protected `master` branch. Require a production reviewer and protect `v*.*.*` tags from unauthorized creation and changes. The production workflow builds a reviewed tag reachable from the branch. CI checks the API routes before upload and holds AWS credentials only in the deployment job.
 
-## Deploy Dev
+Configure these variables in each environment:
 
-From repo root:
+| Variable | Development | Production |
+| --- | --- | --- |
+| `AWS_DEPLOY_ACCOUNT_ID` | Development AWS account ID | Production AWS account ID |
+| `AWS_DEPLOY_ROLE_ARN` | ARN of `stayrate-github-dev` | ARN of `stayrate-github-prod` |
+| `AWS_CLOUDFORMATION_ROLE_ARN` | ARN of `stayrate-dev-cloudformation` | ARN of `stayrate-prod-cloudformation` |
+| `AWS_SERVICE_ROLE_BOUNDARY_ARN` | ARN of `stayrate-dev-service-boundary` | ARN of `stayrate-prod-service-boundary` |
+| `SLACK_WEBHOOK_SECRET_ARN` | Optional Secrets Manager ARN | Optional Secrets Manager ARN |
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2
+In each AWS environment, provision a versioned artifact bucket named `stayrate-dev-artifacts-<account-id>-eu-west-2` or `stayrate-prod-artifacts-<account-id>-eu-west-2`. Enable S3 Block Public Access and enforce bucket-owner ownership. Provision the CloudFormation role once through your AWS administrator. Scope its permissions to that environment's stack resources, including reading the versioned artifact, and require the environment permissions boundary on the runtime service roles that it manages. The deployment passes the boundary ARN to the stack so it can attach the policy to its Lambda and optional CodeDeploy roles. If you supply an execution role after migrating an existing stack, confirm its scope before updating the stack.
+
+Use [the checked-in deploy role policy template](iam/stayrate-github-deploy-inline-policy.json) for each GitHub role. Replace `<stage>` with `dev` or `prod`, `<stack-name>` with the matching stack name, `<account-id>` with the environment account, and `<region>` with the deployment region. Each GitHub role may upload its own Lambda artifact, deploy its one stack, and pass its one execution role to CloudFormation. It has no direct IAM policy management or runtime API invocation permission.
+
+### OIDC trust policy
+
+Set each GitHub deploy role's trust to the exact environment subject. The example below shows the development role in classic subject format. For production use `environment:production` and the production role's account. If the repository uses immutable or customized subjects, replace the value with that environment's exact subject before attaching the trust policy.
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:samsdead/stayrate:environment:development"
+        }
+      }
+    }
+  ]
+}
 ```
 
-## Deploy Prod
+Remove the previous shared deployment role after both workflows use their new roles. AWS IAM and GitHub environment configuration happens outside the repository.
 
-From repo root:
+### Catalog and alert configuration
 
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy-prod.ps1 -Profile stayrate-dev -Region eu-west-2 -EnableCodeDeployCanary false
-```
+Set `BOOKING_CATALOG_JSON` as an environment secret when the stack should accept new bookings. Use a compact JSON object with the shape `{"Bookings":{"Properties":{"demo-property":{"NightlyRate":100,"Currency":"GBP","MaxGuests":4}}}}`. The deployment workflow uses an empty catalog when the secret is unset. Manage the catalog as deployment configuration containing rates and guest limits. Keep personal data and service credentials out of it.
 
-The script will:
+Booking callers need a same-account IAM policy for `execute-api:Invoke` on `arn:aws:execute-api:<region>:<account-id>:<api-id>/$default/POST/api/v1/bookings/quote` and `arn:aws:execute-api:<region>:<account-id>:<api-id>/$default/POST/api/v1/bookings/confirm`. They must sign requests with SigV4 for the `execute-api` service. The health, ready, and quote routes are public and throttled. The dev default is 10 requests per second with a burst of 20, and prod is 25 with a burst of 50. The booking routes are limited to 2 and 5 requests per second respectively.
 
-1. Package Lambda artifact from `src/StayRate.Api`
-2. Upload artifact to S3
-3. Bootstrap CDK (if needed)
-4. Deploy selected stack
-5. Print deployed API endpoint
+For Slack, point `SLACK_WEBHOOK_SECRET_ARN` at a same-account, same-region Secrets Manager secret whose value is the complete Slack webhook URL. The relay retrieves it at runtime and sends only the alarm name and state. To rotate a previously configured plaintext webhook, create a replacement on Slack, store it in Secrets Manager, then revoke the old webhook. Passing an empty Slack ARN explicitly when deploying manually clears an existing value.
 
-`AlertEmail` and `SlackWebhookUrl` can be passed to either script:
+### Manual deployments
+
+From the repository root, with AWS CLI, a pre-bootstrapped CDK setup, .NET 10, and Amazon.Lambda.Tools:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2 -AlertEmail "you@example.com"
+./scripts/deploy-dev.ps1 -Profile stayrate-dev -Region eu-west-2 -ServiceRoleBoundaryArn '<development-policy-arn>'
+./scripts/deploy-prod.ps1 -Profile stayrate-prod -Region eu-west-2 -ServiceRoleBoundaryArn '<production-policy-arn>' -EnableCodeDeployCanary false
 ```
 
-## CodeDeploy Canary
-
-Canary rollout is controlled via `enableCodeDeployCanary=true` CDK context.
-
-If your AWS account does not have CodeDeploy enabled for this service, deploy scripts fail fast with a clear message.
-
-## GitHub Actions Deploy
-
-Required repository variable:
-
-- `AWS_DEPLOY_ROLE_ARN` = IAM role ARN assumed by GitHub OIDC
-
-Workflows:
-
-- `.github/workflows/deploy-dev.yml` (push + manual)
-- `.github/workflows/deploy-prod.yml` (manual only, requires a semantic tag input and uses GitHub `production` environment)
-- `.github/workflows/release.yml` (auto-generates release notes on `v*.*.*` tags)
-
-Optional variable for prod:
-
-- `AWS_DEPLOY_ROLE_ARN_PROD`
-- `ALERT_EMAIL`
-- `ALERT_EMAIL_PROD`
-
-IAM deploy policy:
-
-- `infra/iam/stayrate-github-deploy-inline-policy.json`
-- Attach as inline policy to `stayrate-github-deploy-role`
-
-## Cost Guardrails
-
-Budget configured:
-
-- `stayrate-monthly-cap`
-- Monthly cap: `5 USD`
-- Alert: `ACTUAL > 80%`
-- Subscriber: configured via `ALERT_EMAIL` / `ALERT_EMAIL_PROD` repository variables
+Each script requires the ARN of its environment's service-role permissions boundary. Both accept `BookingCatalogPath`, `SlackWebhookSecretArn`, and `AlertEmail`. Use the GitHub workflows for routine releases. Configure budget alerts in AWS separately if the account needs cost notifications.
 
 ## Persistence Configuration
 
@@ -131,7 +120,7 @@ Alarm: `stayrate-<env>-api-5xx`
 
 - Check: CloudWatch dashboard `stayrate-<env>`, API Gateway metrics (`5xx`, `Latency`, `Count`)
 - Recover:
-  1. Correlate with app logs using trace id and idempotency key
+  1. Correlate with app logs using server-generated trace ID
   2. Validate downstream DynamoDB health/throttles
   3. Redeploy last known good build if regression confirmed
 
@@ -144,41 +133,3 @@ Alarm delivery:
 Manual confirmation required:
 
 - SNS email subscriptions stay in `PendingConfirmation` until the recipient clicks the confirmation link.
-
-Trust policy for the IAM role:
-
-```json
-{
-  "Version": "2012-10-17",
-  "Statement": [
-    {
-      "Effect": "Allow",
-      "Principal": {
-        "Federated": "arn:aws:iam::<account-id>:oidc-provider/token.actions.githubusercontent.com"
-      },
-      "Action": "sts:AssumeRoleWithWebIdentity",
-      "Condition": {
-        "StringEquals": {
-          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com"
-        },
-        "StringLike": {
-          "token.actions.githubusercontent.com:sub": "repo:samsdead/stayrate:*"
-        }
-      }
-    }
-  ]
-}
-```
-
-Create role and attach deploy permissions:
-
-```bash
-aws iam create-role \
-  --role-name stayrate-github-deploy-role \
-  --assume-role-policy-document file://trust-policy.json
-
-aws iam put-role-policy \
-  --role-name stayrate-github-deploy-role \
-  --policy-name stayrate-github-deploy-inline \
-  --policy-document file://infra/iam/stayrate-github-deploy-inline-policy.json
-```

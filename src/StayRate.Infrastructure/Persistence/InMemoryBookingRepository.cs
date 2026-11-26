@@ -18,10 +18,13 @@ public sealed class InMemoryBookingRepository : IBookingRepository
     public Task AddAsync(Booking booking, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-
-        if (!_bookings.TryAdd(booking.Id, booking))
-            throw new InvalidOperationException($"Booking with id '{booking.Id}' already exists.");
-
+        Add(booking);
         return Task.CompletedTask;
+    }
+
+    internal void Add(Booking booking)
+    {
+        if (!_bookings.TryAdd(booking.Id, booking))
+            throw new InvalidOperationException("The booking already exists.");
     }
 }

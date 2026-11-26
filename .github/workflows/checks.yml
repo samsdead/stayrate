@@ -1,0 +1,17 @@
+name: Repository checks
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    uses: ./.github/workflows/build-deployment.yml
+    with:
+      stage: development
+      source_ref: ${{ github.sha }}
+      publish_artifact: false

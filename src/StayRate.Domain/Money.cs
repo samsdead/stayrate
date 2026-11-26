@@ -1,10 +1,13 @@
-﻿namespace StayRate.Domain;
+﻿using System.Text.Json.Serialization;
+
+namespace StayRate.Domain;
 
 public readonly struct Money : IEquatable<Money>
 {
     public decimal Amount { get; }
     public string Currency { get; }
 
+    [JsonConstructor]
     public Money(decimal amount, string currency)
     {
         if (string.IsNullOrWhiteSpace(currency))

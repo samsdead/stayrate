@@ -1,3 +1,9 @@
+using Amazon.Lambda.APIGatewayEvents;
+using Amazon.Lambda.AspNetCoreServer;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
+using Moq;
+using StayRate.Api;
 using Microsoft.AspNetCore.Mvc;
 using StayRate.Api.Controllers;
 using StayRate.Application.Bookings.ConfirmBooking;
@@ -51,13 +57,42 @@ public sealed class BookingsControllerTests
 
     private static BookingsController CreateController()
     {
+        var repository = new InMemoryBookingRepository();
+        var config = new ConfigurationBuilder().AddInMemoryCollection(
+            new[] { "prop-1", "prop-2", "prop-3", "prop-4" }.SelectMany(propertyId =>
+                new Dictionary<string, string?>
+                {
+                    [$"Bookings:Properties:{propertyId}:NightlyRate"] = "100",
+                    [$"Bookings:Properties:{propertyId}:Currency"] = "GBP",
+                    [$"Bookings:Properties:{propertyId}:MaxGuests"] = "4"
+                })).Build();
         var handler = new ConfirmBookingHandler(
-            new InMemoryBookingRepository(),
-            new InMemoryIdempotencyStore(),
+            repository,
+            new InMemoryIdempotencyStore(repository),
             new CanonicalJsonRequestHasher(),
-            new SystemClock());
+            new SystemClock(),
+            new BookingQuoteCatalog(config));
 
-        return new BookingsController(handler);
+        var context = new DefaultHttpContext();
+        context.Items[AbstractAspNetCoreFunction.LAMBDA_REQUEST_OBJECT] = new APIGatewayHttpApiV2ProxyRequest
+        {
+            RequestContext = new APIGatewayHttpApiV2ProxyRequest.ProxyRequestContext
+            {
+                RouteKey = "POST /api/v1/bookings/confirm",
+                Authorizer = new APIGatewayHttpApiV2ProxyRequest.AuthorizerDescription
+                {
+                    IAM = new APIGatewayHttpApiV2ProxyRequest.AuthorizerDescription.IAMDescription
+                    {
+                        AccountId = "000000000000",
+                        UserId = "test-caller"
+                    }
+                }
+            }
+        };
+        return new BookingsController(handler, new BookingCaller(Mock.Of<Microsoft.Extensions.Hosting.IHostEnvironment>(), config), new BookingQuoteCatalog(config))
+        {
+            ControllerContext = new ControllerContext { HttpContext = context }
+        };
     }
 
     private static BookingsController.ConfirmBookingRequest CreateRequest(string propertyId)

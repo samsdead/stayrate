@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Amazon.DynamoDBv2;
 using Amazon.DynamoDBv2.Model;
 using Moq;
@@ -79,6 +80,55 @@ public sealed class DynamoDbRepositoryTests
 
         Assert.NotNull(capturedRequest);
         Assert.Equal("attribute_not_exists(BookingId)", capturedRequest!.ConditionExpression);
+    }
+
+    [Fact]
+    public async Task DynamoDbIdempotencyStore_AddBooking_UsesOneTransaction()
+    {
+        TransactWriteItemsRequest? captured = null;
+        var dynamo = new Mock<IAmazonDynamoDB>(MockBehavior.Strict);
+        dynamo.Setup(client => client.TransactWriteItemsAsync(It.IsAny<TransactWriteItemsRequest>(), It.IsAny<CancellationToken>()))
+            .Callback<TransactWriteItemsRequest, CancellationToken>((request, _) => captured = request)
+            .ReturnsAsync(new TransactWriteItemsResponse());
+        var store = new DynamoDbIdempotencyStore(dynamo.Object, new DynamoDbTableNames("bookings", "idempotency"));
+        var booking = Booking.CreateFromQuoteSnapshot(CreateSnapshot(), "quote-hash", DateTimeOffset.UtcNow);
+        booking.Confirm(booking.CreatedAt);
+        var record = new IdempotencyRecord("v2:scoped", "request-hash", booking.Id, booking.CreatedAt);
+
+        Assert.True(await store.TryAddBookingAsync(record, booking, "legacy", CancellationToken.None));
+        Assert.NotNull(captured);
+        Assert.Collection(captured.TransactItems,
+            item =>
+            {
+                Assert.Equal("bookings", item.Put.TableName);
+                Assert.Equal("attribute_not_exists(BookingId)", item.Put.ConditionExpression);
+            },
+            item =>
+            {
+                Assert.Equal("idempotency", item.Put.TableName);
+                Assert.Equal(booking.Id.ToString("D"), item.Put.Item["ResultBookingId"].S);
+                Assert.Equal("attribute_not_exists(IdempotencyKey)", item.Put.ConditionExpression);
+            },
+            item =>
+            {
+                Assert.Equal("idempotency", item.ConditionCheck.TableName);
+                Assert.Equal("legacy", item.ConditionCheck.Key["IdempotencyKey"].S);
+                Assert.Equal("attribute_not_exists(IdempotencyKey)", item.ConditionCheck.ConditionExpression);
+            });
+        dynamo.VerifyAll();
+    }
+
+    [Fact]
+    public void HistoricQuoteSnapshot_RetainsStoredMoney()
+    {
+        var snapshot = CreateSnapshot();
+        var oldFormat = JsonSerializer.Serialize(snapshot);
+
+        var restored = JsonSerializer.Deserialize<QuoteSnapshot>(oldFormat);
+
+        Assert.NotNull(restored);
+        Assert.Equal(snapshot.Total, restored.Total);
+        Assert.Equal(snapshot.LineItems, restored.LineItems);
     }
 
     private static QuoteSnapshot CreateSnapshot() =>

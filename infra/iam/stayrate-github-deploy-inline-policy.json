@@ -2,188 +2,42 @@
   "Version": "2012-10-17",
   "Statement": [
     {
-      "Sid": "StsIdentity",
+      "Sid": "WriteVersionedLambdaArtifact",
       "Effect": "Allow",
-      "Action": [
-        "sts:GetCallerIdentity"
-      ],
-      "Resource": "*"
+      "Action": "s3:PutObject",
+      "Resource": "arn:aws:s3:::stayrate-<stage>-artifacts-<account-id>-<region>/lambda/*"
     },
     {
-      "Sid": "CloudFormationDeploy",
+      "Sid": "CreateChangesForOneStayRateStack",
       "Effect": "Allow",
-      "Action": [
-        "cloudformation:CreateChangeSet",
-        "cloudformation:CreateStack",
-        "cloudformation:DeleteChangeSet",
-        "cloudformation:DeleteStack",
-        "cloudformation:Describe*",
-        "cloudformation:ExecuteChangeSet",
-        "cloudformation:GetTemplate",
-        "cloudformation:List*",
-        "cloudformation:UpdateStack",
-        "cloudformation:ValidateTemplate"
-      ],
-      "Resource": "*"
+      "Action": "cloudformation:CreateChangeSet",
+      "Resource": "arn:aws:cloudformation:<region>:<account-id>:stack/<stack-name>/*",
+      "Condition": {
+        "ArnEquals": {
+          "cloudformation:RoleArn": "arn:aws:iam::<account-id>:role/stayrate-<stage>-cloudformation"
+        }
+      }
     },
     {
-      "Sid": "ArtifactBucketsAndBootstrapAssets",
+      "Sid": "InspectAndExecuteChangesForOneStayRateStack",
       "Effect": "Allow",
       "Action": [
-        "s3:AbortMultipartUpload",
-        "s3:CreateBucket",
-        "s3:DeleteObject",
-        "s3:GetBucketLocation",
-        "s3:GetBucketVersioning",
-        "s3:GetObject",
-        "s3:HeadBucket",
-        "s3:ListBucket",
-        "s3:PutBucketVersioning",
-        "s3:PutObject"
+        "cloudformation:DescribeStacks",
+        "cloudformation:DescribeChangeSet",
+        "cloudformation:ExecuteChangeSet"
       ],
-      "Resource": [
-        "arn:aws:s3:::stayrate-*",
-        "arn:aws:s3:::stayrate-*/*",
-        "arn:aws:s3:::cdk-*",
-        "arn:aws:s3:::cdk-*/*"
-      ]
+      "Resource": "arn:aws:cloudformation:<region>:<account-id>:stack/<stack-name>/*"
     },
     {
-      "Sid": "ListAllBucketsForArtifactDiscovery",
+      "Sid": "PassOneExecutionRoleToCloudFormation",
       "Effect": "Allow",
-      "Action": [
-        "s3:ListAllMyBuckets"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "LambdaApiAndRelay",
-      "Effect": "Allow",
-      "Action": [
-        "lambda:AddPermission",
-        "lambda:CreateAlias",
-        "lambda:CreateFunction",
-        "lambda:DeleteAlias",
-        "lambda:DeleteFunction",
-        "lambda:Get*",
-        "lambda:InvokeFunction",
-        "lambda:List*",
-        "lambda:PublishVersion",
-        "lambda:RemovePermission",
-        "lambda:TagResource",
-        "lambda:UntagResource",
-        "lambda:UpdateAlias",
-        "lambda:UpdateFunctionCode",
-        "lambda:UpdateFunctionConfiguration"
-      ],
-      "Resource": "arn:aws:lambda:*:762397612240:function:stayrate-*"
-    },
-    {
-      "Sid": "ApiGatewayHttpApi",
-      "Effect": "Allow",
-      "Action": [
-        "apigateway:DELETE",
-        "apigateway:GET",
-        "apigateway:PATCH",
-        "apigateway:POST",
-        "apigateway:PUT"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "DynamoDbAndSsm",
-      "Effect": "Allow",
-      "Action": [
-        "dynamodb:CreateTable",
-        "dynamodb:DeleteTable",
-        "dynamodb:Describe*",
-        "dynamodb:Get*",
-        "dynamodb:List*",
-        "dynamodb:PutItem",
-        "dynamodb:Query",
-        "dynamodb:TagResource",
-        "dynamodb:UntagResource",
-        "dynamodb:Update*",
-        "ssm:DeleteParameter",
-        "ssm:GetParameter",
-        "ssm:GetParameters",
-        "ssm:PutParameter"
-      ],
-      "Resource": [
-        "arn:aws:dynamodb:*:762397612240:table/stayrate-*",
-        "arn:aws:ssm:*:762397612240:parameter/stayrate/*",
-        "arn:aws:ssm:*:762397612240:parameter/cdk-bootstrap/*"
-      ]
-    },
-    {
-      "Sid": "CloudWatchLogsAlarmsDashboards",
-      "Effect": "Allow",
-      "Action": [
-        "cloudwatch:DeleteAlarms",
-        "cloudwatch:Describe*",
-        "cloudwatch:Get*",
-        "cloudwatch:List*",
-        "cloudwatch:PutDashboard",
-        "cloudwatch:PutMetricAlarm",
-        "logs:CreateLogGroup",
-        "logs:DeleteLogGroup",
-        "logs:DeleteRetentionPolicy",
-        "logs:DescribeLogGroups",
-        "logs:PutRetentionPolicy",
-        "logs:TagResource",
-        "logs:UntagResource"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "SnsTopicsAndSubscriptions",
-      "Effect": "Allow",
-      "Action": [
-        "sns:CreateTopic",
-        "sns:DeleteTopic",
-        "sns:GetTopicAttributes",
-        "sns:ListSubscriptionsByTopic",
-        "sns:ListTopics",
-        "sns:SetTopicAttributes",
-        "sns:Subscribe",
-        "sns:TagResource",
-        "sns:Unsubscribe",
-        "sns:UntagResource"
-      ],
-      "Resource": [
-        "arn:aws:sns:*:762397612240:stayrate-*"
-      ]
-    },
-    {
-      "Sid": "CodeDeployForCanaryIfEnabled",
-      "Effect": "Allow",
-      "Action": [
-        "codedeploy:*"
-      ],
-      "Resource": "*"
-    },
-    {
-      "Sid": "IamForCloudFormationManagedRoles",
-      "Effect": "Allow",
-      "Action": [
-        "iam:AttachRolePolicy",
-        "iam:CreateRole",
-        "iam:DeleteRole",
-        "iam:DeleteRolePolicy",
-        "iam:DetachRolePolicy",
-        "iam:GetRole",
-        "iam:ListAttachedRolePolicies",
-        "iam:ListRolePolicies",
-        "iam:PassRole",
-        "iam:PutRolePolicy",
-        "iam:TagRole",
-        "iam:UntagRole"
-      ],
-      "Resource": [
-        "arn:aws:iam::762397612240:role/StayRate*",
-        "arn:aws:iam::762397612240:role/stayrate-*",
-        "arn:aws:iam::762397612240:role/cdk-*"
-      ]
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::<account-id>:role/stayrate-<stage>-cloudformation",
+      "Condition": {
+        "StringEquals": {
+          "iam:PassedToService": "cloudformation.amazonaws.com"
+        }
+      }
     }
   ]
 }

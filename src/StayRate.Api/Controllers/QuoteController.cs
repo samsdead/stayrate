@@ -26,10 +26,13 @@ public class QuoteController : ControllerBase
     );
 
     [HttpPost]
+    [RequestSizeLimit(32_768)]
     public ActionResult<QuoteResponse> Create([FromBody] QuoteRequest request)
     {
-        if (request.Items is null || request.Items.Count == 0)
-            return BadRequest("At least one item is required.");
+        if (request.Items is not { Count: > 0 and <= 100 } ||
+            request.Items.Any(item => item is null || item.Sku is not { Length: > 0 and <= 80 } ||
+                item.UnitPrice is < 0m or > 1_000_000m || item.Quantity is < 1 or > 1_000))
+            return BadRequest("Provide one to 100 quote items with valid prices and quantities.");
 
         var currency = string.IsNullOrWhiteSpace(request.Currency) ? "GBP" : request.Currency;
 

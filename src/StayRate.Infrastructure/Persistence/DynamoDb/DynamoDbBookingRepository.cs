@@ -54,23 +54,12 @@ public sealed class DynamoDbBookingRepository : IBookingRepository
 
     public async Task AddAsync(Booking booking, CancellationToken ct)
     {
-        var item = new Dictionary<string, AttributeValue>
-        {
-            ["BookingId"] = new() { S = booking.Id.ToString("D") },
-            ["Status"] = new() { S = booking.Status.ToString() },
-            ["QuoteSnapshot"] = new() { S = JsonSerializer.Serialize(booking.QuoteSnapshot, JsonOptions) },
-            ["QuoteSnapshotHash"] = new() { S = booking.QuoteSnapshotHash },
-            ["CreatedAt"] = new() { S = booking.CreatedAt.ToString("O") },
-            ["ConfirmedAt"] = new() { S = booking.ConfirmedAt?.ToString("O") ?? string.Empty },
-            ["CancelledAt"] = new() { S = booking.CancelledAt?.ToString("O") ?? string.Empty }
-        };
-
         try
         {
             await _dynamoDb.PutItemAsync(new PutItemRequest
             {
                 TableName = _tableName,
-                Item = item,
+                Item = SerializeBooking(booking),
                 ConditionExpression = "attribute_not_exists(BookingId)"
             }, ct);
         }
@@ -79,6 +68,17 @@ public sealed class DynamoDbBookingRepository : IBookingRepository
             throw new InvalidOperationException($"Booking with id '{booking.Id}' already exists.");
         }
     }
+
+    internal static Dictionary<string, AttributeValue> SerializeBooking(Booking booking) => new()
+    {
+        ["BookingId"] = new() { S = booking.Id.ToString("D") },
+        ["Status"] = new() { S = booking.Status.ToString() },
+        ["QuoteSnapshot"] = new() { S = JsonSerializer.Serialize(booking.QuoteSnapshot, JsonOptions) },
+        ["QuoteSnapshotHash"] = new() { S = booking.QuoteSnapshotHash },
+        ["CreatedAt"] = new() { S = booking.CreatedAt.ToString("O") },
+        ["ConfirmedAt"] = new() { S = booking.ConfirmedAt?.ToString("O") ?? string.Empty },
+        ["CancelledAt"] = new() { S = booking.CancelledAt?.ToString("O") ?? string.Empty }
+    };
 
     private static DateTimeOffset? ParseNullable(IReadOnlyDictionary<string, AttributeValue> item, string attributeName)
     {
